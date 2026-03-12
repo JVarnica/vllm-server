@@ -1,0 +1,34 @@
+use_default_settings: true
+
+server:
+  secret_key: "b0b17906390d3ac58b9336a0cfbf43bee0d04462b7be6d3918fe2a78198ab974"
+  limiter: false
+
+search:
+  safe_search: 0
+  autocomplete: "google"
+
+  formats:
+    - html
+    - json
+
+engines:
+  - name: google
+    engine: google
+    shortcut: g
+    disabled: false
+
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+    disabled: false
+
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+    disabled: false
+
+  - name: bing
+    engine: bing
+    shortcut: bi
+    disabled: false

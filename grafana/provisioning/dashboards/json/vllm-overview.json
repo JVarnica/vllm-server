@@ -1,0 +1,110 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "vllm-overview",
+    "title": "vLLM Overview",
+    "tags": ["vllm", "llm", "inference"],
+    "timezone": "browser",
+    "refresh": "10s",
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "panels": [
+      {
+        "id": 1,
+        "title": "Generation Throughput (tokens/s)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+        "targets": [
+          {
+            "expr": "vllm:avg_generation_throughput_toks_per_s",
+            "legendFormat": "tokens/s"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "GPU KV Cache Usage %",
+        "type": "gauge",
+        "gridPos": { "h": 8, "w": 6, "x": 12, "y": 0 },
+        "targets": [
+          {
+            "expr": "vllm:gpu_cache_usage_perc",
+            "legendFormat": "cache %"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "min": 0,
+            "max": 1,
+            "thresholds": {
+              "steps": [
+                { "color": "green", "value": null },
+                { "color": "yellow", "value": 0.7 },
+                { "color": "red", "value": 0.9 }
+              ]
+            },
+            "unit": "percentunit"
+          }
+        }
+      },
+      {
+        "id": 3,
+        "title": "Active / Waiting Requests",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 6, "x": 18, "y": 0 },
+        "targets": [
+          {
+            "expr": "vllm:num_requests_running",
+            "legendFormat": "running"
+          },
+          {
+            "expr": "vllm:num_requests_waiting",
+            "legendFormat": "waiting"
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Request Latency (p50 / p95 / p99)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.50, rate(vllm:e2e_request_latency_seconds_bucket[5m]))",
+            "legendFormat": "p50"
+          },
+          {
+            "expr": "histogram_quantile(0.95, rate(vllm:e2e_request_latency_seconds_bucket[5m]))",
+            "legendFormat": "p95"
+          },
+          {
+            "expr": "histogram_quantile(0.99, rate(vllm:e2e_request_latency_seconds_bucket[5m]))",
+            "legendFormat": "p99"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": { "unit": "s" }
+        }
+      },
+      {
+        "id": 5,
+        "title": "Prompt vs Generation Tokens",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+        "targets": [
+          {
+            "expr": "vllm:avg_prompt_throughput_toks_per_s",
+            "legendFormat": "prompt tokens/s"
+          },
+          {
+            "expr": "vllm:avg_generation_throughput_toks_per_s",
+            "legendFormat": "generation tokens/s"
+          }
+        ]
+      }
+    ]
+  },
+  "overwrite": true
+}

@@ -1,0 +1,287 @@
+
+
+
+services:
+  # ===========================================
+  # vLLM - High-performance LLM inference server
+  # ===========================================
+  vllm:
+    image: nvcr.io/nvidia/vllm:25.12-py3
+    container_name: vllm-server
+    runtime: nvidia
+    
+    # Required for CUDA inter-process communication
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    
+    expose:
+      - "8000"
+    
+    volumes:
+      # Cache models locally to avoid re-downloading
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    
+    env_file:
+      - .env
+    
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
+      # Force Flash Attention 2 for Blackwell compatibility
+      #- VLLM_USE_FLASHINFER_MOE_FP4=1
+      - VLLM_FLASH_ATTN_VERSION=2
+      
+    
+    shm_size: "2gb"
+    # Command optimized for RTX 5060 Ti 16GB (SM 12.0 Blackwell)
+    command: >
+      vllm serve ${VLLM_MODEL}
+      --dtype auto
+      --max-model-len 8192
+      --gpu-memory-utilization 0.9
+      --host 0.0.0.0
+      --port 8000
+      --enable-auto-tool-choice
+      --tool-call-parser hermes
+      --enable-prefix-caching
+      --max-num-seqs 4
+      --kv-cache-dtype fp8 
+    
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "${HEALTH_CHECK_VLLM_URL}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+    
+    restart: unless-stopped
+    networks:
+      - internal
+      
+ # ===========================================
+ # SEarchxng - web search 
+ # ===========================================
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    
+    expose:
+      - "8080"
+    
+    volumes:
+      - ./searxng:/etc/searxng
+    
+    environment:
+      - SEARXNG_QUERY_URL=${SEARXNG_EXTERNAL_URL}
+    
+    restart: unless-stopped
+    networks:
+      - internal
+
+# ===========================================
+# DeepResearch
+# ===========================================
+  deep-research:
+    build:
+      context: ./research-agent
+      dockerfile: Dockerfile
+    container_name: deep-research
+    expose:
+      - "8001"
+    volumes:
+      - ./research-output:/app/output
+      - ./research-cache:/app/cache
+    env_file:
+      - .env
+    environment:
+      - SEARXNG_URL=${SEARXNG_INTERNAL_URL}
+      - VLLM_URL=${VLLM_URL}
+      - VLLM_MODEL=${VLLM_MODEL}
+      - REDIS_URL=${REDIS_URL}
+      - MAX_CONCURRENT_TASKS=${MAX_CONCURRENT_TASKS}
+      - OUTPUT_DIR=${OUTPUT_DIR}
+    depends_on:
+      vllm:
+        condition: service_healthy
+      searxng:
+        condition: service_started
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "${HEALTH_CHECK_DP_URL}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - internal
+
+# ===========================================
+# Gateway 
+# ===========================================
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    container_name: gateway
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=${REDIS_URL}
+      - QDRANT_URL=${QDRANT_URL}
+      - QDRANT_API_KEY=${QDRANT_API_KEY}
+      - QDRANT_COLLECTION=${QDRANT_COLLECTION}
+      - CHATDB_URL=${CHATDB_URL}
+      - VLLM_URL=${VLLM_URL}
+      - SEARXNG_INTERNAL_URL=${SEARXNG_INTERNAL_URL}
+      - DPR_URL=${DPR_URL}
+      - AUTH_URL=${AUTH_URL}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - ALGORITHM=${ALGORITHM}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
+    volumes:
+      - gateway_data:/data
+    depends_on:
+      vllm:
+        condition: service_healthy
+      searxng:
+        condition: service_started
+      deep-research:
+        condition: service_healthy
+      auth:
+        condition: service_started
+      redis:
+        condition: service_started
+      qdrant:
+        condition: service_started
+
+    restart: unless-stopped
+    networks:
+      - internal
+
+# ===========================================
+# Authentication 
+# ===========================================
+  auth:
+    build:
+      context: ./auth
+      dockerfile: Dockerfile
+    container_name: auth
+    expose:
+      - "8090"
+    env_file:
+      - .env
+    environment:
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - DATABASE_URL=${SQLITE_DB_URL}
+    volumes:
+      - auth-data:/app/data
+    networks:
+      - internal
+
+
+# ===========================================
+# Redis - Task queue and caching
+# ===========================================
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    expose: 
+      - "6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    networks:
+      - internal
+
+# ===========================================
+# Qdrant - Vector database for RAG
+# ===========================================
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY}
+    volumes:
+      - qdrant_data:/qdrant/storage
+    expose:
+      - "6333"
+    restart: unless-stopped
+    networks:
+      - internal
+    
+# ===========================================
+# Prometheus - Metrics collection
+# ===========================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+
+    ports:
+      - "9090:9090"
+
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=30d'
+
+    restart: unless-stopped
+    networks:
+      - internal
+
+ # ===========================================
+  # Grafana - Monitoring dashboards
+  # ===========================================
+  #TODO
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+
+    # Accessible via Caddy at /grafana or separate subdomain
+    ports:
+      - "3000:3000"
+
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SERVER_ROOT_URL=http://192.168.1.14:3000/  
+      - GF_SERVER_SERVE_FROM_SUB_PATH=false
+
+    depends_on:
+      - prometheus
+
+    restart: unless-stopped
+    networks:
+      - internal
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  redis-data:
+  auth-data:
+  qdrant_data:
+  gateway_data:
+
+networks:
+  internal:
+    driver: bridge
