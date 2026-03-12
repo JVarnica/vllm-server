@@ -1,1 +1,3 @@
 .env
+research-output/*
+!research-output/example.md
