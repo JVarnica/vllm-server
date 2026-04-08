@@ -11,6 +11,10 @@ from fastapi.responses import Response, JSONResponse, StreamingResponse
 from app.session import get_session_pairs, append_pair
 from app.rag import retrieve_rag_context
 
+import logging
+logger = logging.getLogger("chat")
+logger.setLevel(logging.INFO)
+
 VLLM_URL = os.environ["VLLM_URL"]
 SEARXNG_INTERNAL_URL = os.environ["SEARXNG_INTERNAL_URL"]
 
@@ -78,12 +82,13 @@ def parse_sse_stream(line: str) -> tuple[str, bool]:
         delta = c0.get("delta") or {}
         content = delta.get("content") or ""
         
-        done = c0.get("finish_reason") == "stop"
-        return (content, done)
+        finish = c0.get("finish_reason") or ""
+        done = finish in ("stop", "length") 
+        return (content, done, finish)
     except json.JSONDecodeError:
-        return ("" , False)
+        return ("" , False, "")
 
-@router.post("/v1/chat/completions")
+@router.post("/chat")
 async def chat(request: Request):
     user_id = request.state.user_id
     stream_client = request.app.state.stream_client
@@ -130,6 +135,7 @@ async def chat(request: Request):
     #stream request
     async def stream_vllm():
         assistant_accum: list[str] = []
+        finish_reason = "unknown"
         assert stream_client is not None
         sem = request.app.state.vllm_sem
         assert sem is not None
@@ -143,11 +149,12 @@ async def chat(request: Request):
                     if not line:
                         continue
                     if line.startswith("data:") and not done_seen:
-                        delta, done = parse_sse_stream(line)
+                        delta, done, finish = parse_sse_stream(line)
                         if delta:
                             assistant_accum.append(delta)
                         if done:
                             done_seen = True
+                            logger.info(f"Chat finished: {finish} | user={user_id} | session={session_id}")
                     yield line + "\n\n"
 
         final = "".join(assistant_accum).strip()

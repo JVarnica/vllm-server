@@ -13,7 +13,6 @@ from jose import JWTError, jwt
 from pydantic import BaseModel, Field
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, JSONResponse, StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.http import models as qmodels
 

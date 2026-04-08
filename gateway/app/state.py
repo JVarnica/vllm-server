@@ -40,10 +40,10 @@ stream_client: Optional[httpx.AsyncClient] = None
 
 # Startup / Shutdown
 async def _init_sqlite(conn: aiosqlite.Connection) -> None:
-    await conn.execute("PRAGMA journal_mode=WAL;")
-    await conn.execute("PRAGMA synchronous=NORMAL;")
+    await conn.execute("PRAGMA journal_mode=WAL;") # write ahead logging
+    await conn.execute("PRAGMA synchronous=NORMAL;") # 
     await conn.execute("""
-        CREATE TABLE IF NOT EXISTS conversations (
+        CREATE TABLE IF NOT EXISTS conversations ( 
             convo_id    TEXT PRIMARY KEY,
             user_id     TEXT NOT NULL,
             title       TEXT DEFAULT '',
@@ -51,6 +51,7 @@ async def _init_sqlite(conn: aiosqlite.Connection) -> None:
             updated_at  INTEGER NOT NULL
         );
     """)
+    # Chat List conversations dont need content. Messages the saved chats.
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             msg_id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,7 +85,12 @@ async def _init_qdrant() -> Optional[AsyncQdrantClient]:
     if not exists:
         await client.create_collection(
             collection_name=QDRANT_COLLECTION,
-            vectors_config=qmodels.VectorParams(size=EMBEDDING_DIM, distance=qmodels.Distance.COSINE),
+            vectors_config=qmodels.VectorParams(
+                size=EMBEDDING_DIM, 
+                distance=qmodels.Distance.COSINE,
+                on_disk=True
+            ),
+            hnsw_config=qmodels.HnswConfigDiff(m=0, ef_construct=4, full_scan_threshold=10) #brute force if less than 10 
         )
     return client
 
@@ -99,6 +105,7 @@ async def _init_redis_streams(r: aioredis.Redis) -> None:
             raise
 
 async def startup(app: FastAPI) -> None:
+
     app.state.redis_pool = aioredis.from_url(REDIS_URL, decode_responses=True)
     await _init_redis_streams(app.state.redis_pool)
 

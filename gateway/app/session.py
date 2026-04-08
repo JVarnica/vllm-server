@@ -195,7 +195,7 @@ async def create_session(request: Request):
         },
     )
     await redis_pool.expire(f"session:{session_id}:meta", SESSION_TTL)
-    await redis_pool.expire(f"session:{session_id}:pairs", SESSION_TTL)
+    
     return {"session_id": session_id}
 
 @router.post("/session/append_pair")
