@@ -2,7 +2,7 @@ import os
 import time
 import uuid
 import json
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from pydantic import BaseModel
 from fastapi import Request, APIRouter, HTTPException
 
@@ -37,7 +37,24 @@ def _format_chunk_text(pairs: List[Tuple[str, str]]) -> str:
         out.append(f"Assistant: {a.strip()}")
     return "\n".join(out).strip()
 
-async def get_session_pairs(request: Request, session_id: str, user_id: str) -> list[dict]:
+async def get_redis_list(request: Request, key: str, limit: int = 0) -> list[dict]:
+    redis_pool = request.app.state.redis_pool
+    assert redis_pool is not None
+
+    start = -limit if limit > 0 else 0
+    raw = await redis_pool.lrange(key, start, -1)
+    if not raw:
+        return []
+    
+    out= []
+    for r in raw:
+        try:
+            out.append(json.loads(r))
+        except Exception:
+            continue
+    return out
+
+async def get_session_context(request: Request, session_id: str, user_id: str) -> list[dict]:
     redis_pool = request.app.state.redis_pool
     assert redis_pool is not None
 
@@ -48,18 +65,35 @@ async def get_session_pairs(request: Request, session_id: str, user_id: str) -> 
     if meta.get("user_id") != user_id:
         raise HTTPException(403, "Session does not belong to user")
 
+    context_key = f"session:{session_id}:context"
     pairs_key = f"session:{session_id}:pairs"
-    raw = await redis_pool.lrange(pairs_key, -MAX_CONTEXT_PAIRS, -1)
-    if not raw:
-        return []
     
-    out: list[dict] = []
-    for r in raw:
-        try:
-            out.append(json.loads(r))
-        except Exception:
-            continue
-    return out
+    pairs = await get_redis_list(request, pairs_key, limit=MAX_CONTEXT_PAIRS)
+    context = await get_redis_list(request, context_key)
+  
+    return {"pairs": pairs, "context": context}
+
+
+# rag/search context list
+async def append_context(
+        request: Request,
+        session_id: str,
+        user_id: str,
+        search_context: Optional[str],
+        rag_context: Optional[str],
+    ) -> None:
+
+    redis_pool = request.app.state.redis_pool
+    assert redis_pool is not None
+    
+    context_key = f"session:{session_id}:context"
+    context_obj = {
+        "search_context": search_context or "",
+        "rag_context": rag_context or "",
+    }
+    await redis_pool.rpush(context_key, json.dumps(context_obj))
+    await redis_pool.expire(context_key, SESSION_TTL)
+
 
 async def append_pair(
         request: Request,

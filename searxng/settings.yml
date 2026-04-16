@@ -16,7 +16,7 @@ engines:
   - name: google
     engine: google
     shortcut: g
-    disabled: false
+    disabled: true
 
   - name: duckduckgo
     engine: duckduckgo

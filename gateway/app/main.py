@@ -6,6 +6,7 @@ import time
 from typing import Any, Optional, List, Tuple
 import uuid
 import httpx
+import logging
 import redis.asyncio as aioredis
 import aiosqlite
 from sentence_transformers import SentenceTransformer
@@ -28,6 +29,7 @@ DPR_URL = os.environ["DPR_URL"]
 
 app = FastAPI(title="Gateway Service", version="0.1.0")
 app.middleware("http")(auth_middleware)
+logging.basicConfig(level=logging.INFO)
 
 
 @app.on_event("startup")
