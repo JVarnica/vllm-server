@@ -9,11 +9,11 @@ from pydantic import BaseModel
 from fastapi import Request, APIRouter, HTTPException
 from fastapi.responses import Response, JSONResponse, StreamingResponse
 from transformers import AutoTokenizer
-import trafilatura
 import asyncio
 
 from app.session import get_session_context, append_pair
 from app.rag import retrieve_rag_context
+from app.context import search_and_scrape, format_search_context
 
 import logging
 logger = logging.getLogger("uvicorn.error")
@@ -27,9 +27,40 @@ DEFAULT_PROMPT_TOKENS = 10000
 MIN_GEN_TOKENS = 512
 MAX_CONTEXT_WINDOW = 16384
 
-S_CONTEXT_MAX_CHARS = 10000
-TOP_N = 3 # use top 3 results
-SCRAPE_MAX_CHARS = 2000 # max chars to scrape from each url
+
+# agentic loop 
+MAX_TOOL_ITER = 3
+TCALL_MAX_RESULTS = 5 
+
+WEB_SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": (
+            "Search the web for current, recent, or specific factual information. "
+            "Use this when the user asks about: recent events, news, current "
+            "prices/scores/weather, specific people/companies/products, or anything "
+            "that may have changed after your training cutoff. "
+            "Do NOT use this for: general knowledge, math, coding, definitions, "
+            "explanations of concepts, opinions, or conversational replies."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Concise search query, 2-6 keywords. Avoid full sentences.",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": f"Number of results to fetch (default {TCALL_MAX_RESULTS}).",
+                    "default": TCALL_MAX_RESULTS,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
 
 router = APIRouter()
 
@@ -102,6 +133,7 @@ def build_context_messages(
     has_search = bool(search_context or any(
     ctx.get("search_context") for ctx in session["context"]
     ))
+
     if has_search:
         messages.append({"role": "system", "content": SEARCH_GROUNDING_PROMPT})
     for pair in session["pairs"]: # get session takes already max 6 pairs
@@ -150,15 +182,16 @@ def parse_sse_stream(line: str) -> tuple[str, bool]:
 async def chat(request: Request):
     user_id = request.state.user_id
     stream_client = request.app.state.stream_client
+    http_client = request.app.state.http_client
     body = await request.json()
 
     session_id = body.get("session_id")
     message = body.get("message", "")
-    enable_search = body.get("enable_search", False)
+    # enable_search = body.get("enable_search", False)
     enable_rag = body.get("enable_rag", False)
     model = body.get("model", os.environ["VLLM_MODEL"])
     temperature = body.get("temperature", 0.7)
-    req_max_tokens = body.get("max_tokens", 2048)
+    
 
     if not session_id:
         raise HTTPException(400, "session_id is required")
@@ -167,40 +200,120 @@ async def chat(request: Request):
     
     session = await get_session_context(request, session_id, user_id)
 
-    search_context = None
+    """search_context = None
     if enable_search:
         search_results = await search_and_scrape(request, message, max_results=10) # searxng given urls to be ranked 
         search_context = format_search_context(search_results)
-
+    # old toggle context 
+    """ 
     rag_context = None
     if enable_rag:
         rag_context = await retrieve_rag_context(request, user_id, query=message)
 
-    messages = build_context_messages(
-        session, 
-        message, 
-        search_context=search_context, 
-        rag_context=rag_context
-    )
-    max_tokens = compute_max_tokens(messages)
-    prompt_tokens = count_messages_tokens(messages)
-    logger.info(f"Session {session_id}: prompt_tokens={prompt_tokens}, max_tokens={max_tokens}")
+    sem = request.app.state.vllm_sem
 
-    vllm_payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "stream": True,
-        "stream_options": {"include_usage": True}
-    }
-    #stream request
-    async def stream_vllm():
-        assistant_accum: list[str] = []
+    async def stream_agent():
+        #  1: Decide tool usage 
+        messages = build_context_messages(session, message, search_context=None, rag_context=rag_context)
+        did_search = False 
+        for tool_iter in range(MAX_TOOL_ITER):
+
+            probe_payload = {
+                "model": model,
+                "messages": messages,
+                "tools": [WEB_SEARCH_TOOL],
+                "tool_choice": "auto",
+                "max_tokens": compute_max_tokens(messages), 
+                "stream": False,
+            }
+            async with sem:
+                probe_resp = await http_client.post(
+                    f"{VLLM_URL}/v1/chat/completions", 
+                    json=probe_payload,
+                )
+            probe_resp.raise_for_status()
+            probe_data = probe_resp.json()
+
+            msg = probe_data["choices"][0]["message"]
+            tool_calls = msg.get("tool_calls") or []
+            if not tool_calls:
+                break  # no tool calls, proceed to final response
+
+            did_search = True
+            
+            #append assistant turn with tool calls
+            messages.append({
+                "role": "assistant",
+                "content": msg.get("content") or "",
+                "tool_calls": tool_calls
+            })
+            #execute all tool calls sequentially currently
+            for tc in tool_calls:
+                fn = tc.get("function") or {}
+                tc_id = tc.get("id")
+                logger.info(f"Session {session_id}: tool_call ID:{tc_id}")
+                if fn.get("name") != "web_search":
+                    messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "content": f"Error: unknown tool {fn.get('name')}"
+                    })
+                    continue
+
+                raw_args = fn.get("arguments") or {}
+                try: 
+                    args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                except json.JSONDecodeError:
+                    args = {}
+                query = args.get("query", message)
+                max_results = int(args.get("max_results", TCALL_MAX_RESULTS))
+
+                yield f"event: tool_use\ndata: {json.dumps({'query': query, 'iter': tool_iter})}\n\n"
+                 
+                try:
+                    search_results = await search_and_scrape(request, query, max_results=max_results)
+                    tool_content = format_search_context(search_results)
+                    count = len(search_results)
+                except Exception as e:
+                    tool_content = f"Error during web search: {str(e)}"
+                    count = 0
+                    logger.exception(f"search failed for '{query}'")
     
-        assert stream_client is not None
-        sem = request.app.state.vllm_sem
-        assert sem is not None
+                yield f"event: tool_result\ndata: {json.dumps({'query': query, 'results_count': count})}\n\n"
+                logger.info(f"Session {session_id}: iter={tool_iter} '{query}' → {count} results")
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "content": tool_content
+                })
+        else:
+            # max loop reached without break
+            messages.append({
+                "role": "system",
+                "content": "Maximum searches done, used all tool iterations. Now answer with gathered information."
+            })
+        
+        #Grounding prompt telling model how to use search results
+        if did_search:
+            messages.insert(1, {"role": "system", "content": SEARCH_GROUNDING_PROMPT})
+
+
+        max_tokens = compute_max_tokens(messages)
+        prompt_tokens = count_messages_tokens(messages)
+        logger.info(f"Session {session_id}: prompt_tokens={prompt_tokens}, max_tokens={max_tokens}, did_search={did_search})")
+        
+        # Final streaming call no tools 
+        vllm_payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+            "stream_options": {"include_usage": True}
+        }
+        assistant_accum: list[str] = []
+
         async with sem:  # limit max concurrent vllm calls
             async with stream_client.stream(
                 "POST",
@@ -226,105 +339,9 @@ async def chat(request: Request):
             condensed, _ = condense_assistant(final) 
             await append_pair(request,session_id, user_id, message, condensed)   # redis write (+ optional embed enqueue)
 
-    return StreamingResponse(stream_vllm(), media_type="text/event-stream")
+    return StreamingResponse(stream_agent(), media_type="text/event-stream")
 
-def _scrape_url(url: str, max_chars: int = SCRAPE_MAX_CHARS) -> Optional[str]:
-    """Synchronous trafilatura extraction — run via asyncio.to_thread."""
-    try:
-        downloaded = trafilatura.fetch_url(url)
-        if not downloaded:
-            return None
-        text = trafilatura.extract(
-            downloaded,
-            include_tables=True,
-            include_comments=False,
-            favor_recall=True,
-        )
-        if not text:
-            return None
-        if len(text) > max_chars:
-            text = text[:max_chars].rstrip() + "…"
-        return text
-    except Exception as e:
-        logger.warning(f"Scrape failed for {url}: {e}")
-        return None
- 
- 
-async def scrape_urls(urls: list[str], max_chars: int = SCRAPE_MAX_CHARS) -> dict[str, Optional[str]]:
-    """Scrape multiple URLs concurrently, returns {url: extracted_text}."""
-    tasks = {
-        url: asyncio.to_thread(_scrape_url, url, max_chars)
-        for url in urls
-    }
-    results = {}
-    for url, task in tasks.items():
-        try:
-            results[url] = await task
-        except Exception:
-            results[url] = None
-    return results
 
-async def search_searxng(request: Request, query: str, max_results: int) -> list[dict]:
-    http_client = request.app.state.http_client
-    assert http_client is not None
-    url = f"{SEARXNG_INTERNAL_URL.rstrip('/')}/search"
-    r = await http_client.get(url, params={"q": query, "format": "json"})
-    r.raise_for_status()
-    data = r.json()
-    results = data.get("results") or []
-    out = []
-    for it in results[:max_results]:
-        out.append({
-            "title": it.get("title", ""),
-            "url": it.get("url", ""),
-            "content": it.get("content", ""),
-            "engine": it.get("engine", ""),
-            "score": it.get("score", 0),
-        })
-    return out
 
  
-async def search_and_scrape(request: Request, query: str, max_results: int) -> list[dict]:
-    """Search SearXNG, then scrape top results with trafilatura for richer content."""
-    search_results = await search_searxng(request, query, max_results)
-    if not search_results:
-        return search_results
-    
-        # sort by score descending, scrape the top N
-    sorted_results = sorted(search_results, key=lambda r: r.get("score", 0), reverse=True)
-    urls_to_scrape = [r["url"] for r in sorted_results[:TOP_N] if r.get("url")]
  
-    scraped = await scrape_urls(urls_to_scrape)
- 
-    # merge scraped content back — use scraped text if available, fall back to snippet
-    for r in search_results:
-        url = r.get("url", "")
-        if url in scraped and scraped[url]:
-            r["content"] = scraped[url]
- 
-    return search_results
-
-
-def format_search_context(results: list[dict], max_chars: int = S_CONTEXT_MAX_CHARS) -> str:
-    lines = ["[Web search results]"]
-    total_chars = len(lines[0]) 
-
-    for i, r in enumerate(results, start=1):
-        title = (r.get("title") or "").strip()
-        url = (r.get("url") or "").strip()
-        content = (r.get("content") or "").strip()
-        content = re.sub(r"\s+", " ", content)
-
-
-        entry = f"[{i}] {title}\nURL: {url}\n{content}".strip()
-        if total_chars + len(entry) + 2 > max_chars:
-            remaining = max_chars - total_chars - 2
-            if remaining > 200:
-                entry = entry[:remaining].rstrip() + "…"
-            else:
-                break
-        lines.append(entry)
-        total_chars += len(entry) + 2
-
-    s = "\n\n".join(lines).strip()
-    return s 
