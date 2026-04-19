@@ -27,7 +27,7 @@ DEFAULT_PROMPT_TOKENS = 10000
 MIN_GEN_TOKENS = 512
 MAX_CONTEXT_WINDOW = 16384
 
-
+MARGIN_SAFETY = 128
 # agentic loop 
 MAX_TOOL_ITER = 3
 TCALL_MAX_RESULTS = 5 
@@ -87,23 +87,38 @@ _tokenizer = AutoTokenizer.from_pretrained(
     trust_remote_code=True,
 )
 
-def count_tokens(text: str) -> int:
-    """Count tokens using the actual model tokenizer."""
-    return len(_tokenizer.encode(text, add_special_tokens=False))
+def count_tokens(text: list[dict], tools: list[dict] | None = None,
+) -> int:
+    """Prompt count need to render chat template"""
+    try: 
+        rendered = _tokenizer.apply_chat_template(text, tools=tools, add_generation_prompt=True, tokenize=False)
+        return len(_tokenizer.encode(rendered, add_special_tokens=False))
+    except Exception as e:
+        logger.warning(f"apply_chat_template failed ({e}); falling back to estimate")
+        total = sum(count_tokens(m.get("content") or "") for m in text)
+        return total + 20 * len(text) + (200 if tools else 0)
  
- 
+"""
 def count_messages_tokens(messages: list[dict]) -> int:
-    """Count total tokens across all messages including role overhead."""
+    #Count total tokens across all messages including role overhead.
     total = 0
     for m in messages:
         total += count_tokens(m.get("content", ""))
         total += 4  # role/formatting overhead per message
     return total
+"""
 
-def compute_max_tokens(messages: list[dict], requested_max: int) -> int:
+def compute_max_tokens(messages: list[dict], tools: list[dict] | None = None) -> int:
     """Compute max_tokens so prompt + generation fits in context window."""
-    prompt_tokens = count_messages_tokens(messages)
-    available = MAX_CONTEXT_WINDOW - prompt_tokens
+    prompt_tokens = count_tokens(messages, tools=tools)
+    available = MAX_CONTEXT_WINDOW - prompt_tokens - MARGIN_SAFETY
+
+    if available < MIN_GEN_TOKENS:
+        logger.warning(
+            f"Prompt is {prompt_tokens} tokens — only {available} left for "
+            f"generation (below MIN_GEN_TOKENS={MIN_GEN_TOKENS}). "
+            f"Consider truncating session history."
+        )
     return max(MIN_GEN_TOKENS, available)
 
 
@@ -223,7 +238,7 @@ async def chat(request: Request):
                 "messages": messages,
                 "tools": [WEB_SEARCH_TOOL],
                 "tool_choice": "auto",
-                "max_tokens": compute_max_tokens(messages), 
+                "max_tokens": MIN_GEN_TOKENS, 
                 "stream": False,
             }
             async with sem:
@@ -300,7 +315,7 @@ async def chat(request: Request):
 
 
         max_tokens = compute_max_tokens(messages)
-        prompt_tokens = count_messages_tokens(messages)
+        prompt_tokens = count_tokens(messages)
         logger.info(f"Session {session_id}: prompt_tokens={prompt_tokens}, max_tokens={max_tokens}, did_search={did_search})")
         
         # Final streaming call no tools 
