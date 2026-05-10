@@ -13,9 +13,9 @@ import logging
 logger = logging.getLogger("uvicorn.error")
 
 #search 
-S_CONTEXT_MAX_CHARS = 10000
-TOP_N = 3 # use top 3 results
-SCRAPE_MAX_CHARS = 2000 # max chars to scrape from each url
+S_CONTEXT_MAX_CHARS = 20000 
+TOP_N = 2 # use top 2 results
+SCRAPE_MAX_CHARS = 5000 # max chars to scrape from each url
 SEARXNG_INTERNAL_URL = os.environ["SEARXNG_INTERNAL_URL"]
 
 router = APIRouter()
@@ -97,8 +97,21 @@ async def search_and_scrape(request: Request, query: str, max_results: int) -> l
     return search_results
 
 
-def format_search_context(results: list[dict], max_chars: int = S_CONTEXT_MAX_CHARS) -> str:
-    lines = ["[Web search results]"]
+def format_search_context(
+        results: list[dict], 
+        max_chars: int = S_CONTEXT_MAX_CHARS, 
+        top_n: Optional[int] = None,
+        per_result_chars: Optional[int] = None,
+        header: str = "[Web search results]",
+) -> str:
+    if not results:
+        return ""
+
+    if top_n is not None:
+        # rank by score when filtering — otherwise SearXNG order is preserved
+        results = sorted(results, key=lambda r: r.get("score", 0), reverse=True)[:top_n]
+
+    lines = [header]
     total_chars = len(lines[0]) 
 
     for i, r in enumerate(results, start=1):
@@ -106,6 +119,8 @@ def format_search_context(results: list[dict], max_chars: int = S_CONTEXT_MAX_CH
         url = (r.get("url") or "").strip()
         content = (r.get("content") or "").strip()
         content = re.sub(r"\s+", " ", content)
+        if per_result_chars and len(content) > per_result_chars:
+            content = content[:per_result_chars].rstrip() + "…"
 
 
         entry = f"[{i}] {title}\nURL: {url}\n{content}".strip()

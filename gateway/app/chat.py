@@ -11,7 +11,7 @@ from fastapi.responses import Response, JSONResponse, StreamingResponse
 from transformers import AutoTokenizer
 import asyncio
 
-from app.session import get_session_context, append_pair
+from app.session import get_session_context, append_pair, append_context
 from app.rag import retrieve_rag_context
 from app.context import search_and_scrape, format_search_context
 
@@ -31,6 +31,16 @@ MARGIN_SAFETY = 128
 # agentic loop 
 MAX_TOOL_ITER = 3
 TCALL_MAX_RESULTS = 5 
+
+
+router = APIRouter()
+
+def get_system_prompt() -> str:
+    return  f"""You are a helpful AI assistant. Today's date is {datetime.now(timezone.utc).strftime("%Y-%m-%d")}.
+
+For complex questions requiring analysis, wrap your reasoning in <think>...</think> tags before 
+responding. For simple/factual questions, respond directly without thinking.
+"""
 
 WEB_SEARCH_TOOL = {
     "type": "function",
@@ -61,18 +71,6 @@ WEB_SEARCH_TOOL = {
         },
     },
 }
-
-router = APIRouter()
-
-def get_system_prompt() -> str:
-    return  f"""You are a helpful AI assistant. Today's date is {datetime.now(timezone.utc).strftime("%Y-%m-%d")}.
-
-For complex questions requiring analysis, wrap your reasoning in <think>...</think> tags before 
-responding. For simple/factual questions, respond directly without thinking.
-
-When you do use <think>, end your reasoning with a summary, a few lines <summary>...</summary> tag capturing
-your key conclusion, placed just before </think>."""
-
 SEARCH_GROUNDING_PROMPT = """You have been provided with web search results below. Follow these rules strictly:
  
 1. Base your answer ONLY on the information in the search results provided.
@@ -80,6 +78,13 @@ SEARCH_GROUNDING_PROMPT = """You have been provided with web search results belo
 3. Cite sources by number [1], [2] etc when stating facts from the results.
 4. If the search results do not contain enough information to fully answer the question, say so clearly — do NOT guess or fill gaps with assumptions.
 5. If results conflict with each other, note the disagreement.
+"""
+
+RAG_GROUNDING_PROMPT = """You have been provided with excerpts from this user's past conversations below, retrieved by similarity to their current message. Follow these rules strictly:
+1. Treat these excerpts as MEMORY, not as authoritative facts. They may be stale, partial, or out of date.
+2. Use them only when they are clearly relevant to the current message. If they are not relevant, IGNORE them and answer normally — do NOT force their use.
+3. Do NOT fabricate or invent things the user previously said. If a chunk does not actually contain the detail you would need, say you do not recall it rather than guessing.
+4. The user's CURRENT message always takes precedence. If a past excerpt contradicts what they are saying now, defer to the current message.
 """
 
 _tokenizer = AutoTokenizer.from_pretrained(
@@ -98,15 +103,6 @@ def count_tokens(text: list[dict], tools: list[dict] | None = None,
         total = sum(count_tokens(m.get("content") or "") for m in text)
         return total + 20 * len(text) + (200 if tools else 0)
  
-"""
-def count_messages_tokens(messages: list[dict]) -> int:
-    #Count total tokens across all messages including role overhead.
-    total = 0
-    for m in messages:
-        total += count_tokens(m.get("content", ""))
-        total += 4  # role/formatting overhead per message
-    return total
-"""
 
 def compute_max_tokens(messages: list[dict], tools: list[dict] | None = None) -> int:
     """Compute max_tokens so prompt + generation fits in context window."""
@@ -121,77 +117,60 @@ def compute_max_tokens(messages: list[dict], tools: list[dict] | None = None) ->
         )
     return max(MIN_GEN_TOKENS, available)
 
-
-def condense_assistant(text: str) -> tuple[str, str]: 
-    think_match = re.search(r"<think>(.*?)</think>", text, re.DOTALL) 
-    clean = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL) 
-    clean = clean.replace("<think>", "").replace("</think>", "") 
-    clean = re.sub(r"\n{3,}", "\n\n", clean).strip() 
-    if think_match: 
-        thinking = think_match.group(1) 
-        summary_match = re.search(r"<summary>(.*?)</summary>", thinking, re.DOTALL) 
-        if summary_match: 
-            summary = summary_match.group(1).strip() 
-            return f"[Prior note: {summary}]\n\n{clean}", summary 
-        return clean, "" 
-    return clean, "" 
-
-
 def build_context_messages(
         session: dict, 
         current_message: str, 
-        search_context: Optional[str] = None, 
         rag_context: Optional[str] = None, 
         )-> list[dict]: 
     messages = [{"role": "system", "content": get_system_prompt()}] 
+    has_rag = bool(rag_context) or any(c.get("rag_context") for c in session["context"])
+    if has_rag:
+        messages.append({"role": "system", "content": RAG_GROUNDING_PROMPT})    
 
-    has_search = bool(search_context or any(
-    ctx.get("search_context") for ctx in session["context"]
-    ))
-
-    if has_search:
-        messages.append({"role": "system", "content": SEARCH_GROUNDING_PROMPT})
     for pair in session["pairs"]: # get session takes already max 6 pairs
         messages.append({"role": "user", "content": pair.get("user_text", "")}) 
         messages.append({"role": "assistant", "content": pair.get("assistant_text", "")}) 
     for context in session["context"]:
         if context.get("rag_context"):
             messages.append({"role": "system", "content": context["rag_context"]})
-        if context.get("search_context"):
-            messages.append({"role": "system", "content": context["search_context"]})
+        if context.get("memory_context"):
+            messages.append({"role": "system", "content": f"[Prior turn memory]\n{context['memory_context']}"})
+        if context.get("tool_context"):
+            messages.append({"role": "system", "content": context["tool_context"]})
     if rag_context: 
         messages.append({"role": "system", "content": rag_context}) 
-    if search_context: 
-        messages.append({"role": "system", "content": search_context}) 
-
+  
     messages.append({"role": "user", "content": current_message}) 
     return messages
 
 # sse stream done when "finish_reason": "stop" recieved so need to have flag for when recieved
-def parse_sse_stream(line: str) -> tuple[str, bool]:
+def parse_sse_stream(line: str) -> tuple[str, str, bool, str, dict]:
+    empty = ("", "", False, "", {})
     if not line.startswith("data:"):
-        return ("" , False)
+        return empty
     data = line[len("data:"):].strip()
     if not data:
-        return ("" , False)
+        return empty
     if data == "[DONE]":
-        return ("", True)
+        return ("", "", True, "stop",{})
     try:
         obj = json.loads(data)
         choices = obj.get("choices") or []
         if not choices:
-            return ("" , False)
+            return ("", "", False, "", usage)
+        
         c0 = choices[0] or {}
         delta = c0.get("delta") or {}
         content = delta.get("content") or ""
+        reasoning_content = delta.get("reasoning_content") or ""
         
         finish = c0.get("finish_reason") or ""
         done = finish in ("stop", "length") 
         usage =obj.get("usage")
-        return (content, done, finish, usage)
+        return (content, reasoning_content, done, finish, usage)
     
     except json.JSONDecodeError:
-        return ("" , False, "", {})
+        return empty
 
 @router.post("/chat")
 async def chat(request: Request):
@@ -214,22 +193,21 @@ async def chat(request: Request):
         raise HTTPException(400, "message is required")
     
     session = await get_session_context(request, session_id, user_id)
-
-    """search_context = None
-    if enable_search:
-        search_results = await search_and_scrape(request, message, max_results=10) # searxng given urls to be ranked 
-        search_context = format_search_context(search_results)
-    # old toggle context 
-    """ 
+    logger.info(f"Session {session_id}: received message: '{message}' session: {session}")
+    
+    #context pairs and rag context
     rag_context = None
     if enable_rag:
         rag_context = await retrieve_rag_context(request, user_id, query=message)
 
     sem = request.app.state.vllm_sem
+    probe_reasoning: list[str] = []
+    search_trace: list[str] = []
+    tool_accum: list[dict] = []
 
     async def stream_agent():
         #  1: Decide tool usage 
-        messages = build_context_messages(session, message, search_context=None, rag_context=rag_context)
+        messages = build_context_messages(session, message, rag_context=rag_context)
         did_search = False 
         for tool_iter in range(MAX_TOOL_ITER):
 
@@ -238,7 +216,7 @@ async def chat(request: Request):
                 "messages": messages,
                 "tools": [WEB_SEARCH_TOOL],
                 "tool_choice": "auto",
-                "max_tokens": MIN_GEN_TOKENS, 
+                "max_tokens": 2000, 
                 "stream": False,
             }
             async with sem:
@@ -253,15 +231,19 @@ async def chat(request: Request):
             tool_calls = msg.get("tool_calls") or []
             if not tool_calls:
                 break  # no tool calls, proceed to final response
-
-            did_search = True
             
+            did_search = True
+            #capture tool use reasoning
+            probe_reason = msg.get("reasoning_content") or ""
+            if probe_reason:
+                probe_reasoning.append(probe_reason.strip())
             #append assistant turn with tool calls
             messages.append({
                 "role": "assistant",
                 "content": msg.get("content") or "",
                 "tool_calls": tool_calls
             })
+            
             #execute all tool calls sequentially currently
             for tc in tool_calls:
                 fn = tc.get("function") or {}
@@ -282,12 +264,13 @@ async def chat(request: Request):
                     args = {}
                 query = args.get("query", message)
                 max_results = int(args.get("max_results", TCALL_MAX_RESULTS))
-
+                search_trace.append(query)
                 yield f"event: tool_use\ndata: {json.dumps({'query': query, 'iter': tool_iter})}\n\n"
                  
                 try:
                     search_results = await search_and_scrape(request, query, max_results=max_results)
                     tool_content = format_search_context(search_results)
+                    tool_accum.extend(search_results)
                     count = len(search_results)
                 except Exception as e:
                     tool_content = f"Error during web search: {str(e)}"
@@ -302,6 +285,7 @@ async def chat(request: Request):
                     "tool_call_id": tc_id,
                     "content": tool_content
                 })
+                
         else:
             # max loop reached without break
             messages.append({
@@ -328,33 +312,65 @@ async def chat(request: Request):
             "stream_options": {"include_usage": True}
         }
         assistant_accum: list[str] = []
+        reasoning_accum: list[str] = []
+        try:
+            async with sem:  # limit max concurrent vllm calls
+                async with stream_client.stream(
+                    "POST",
+                    f"{VLLM_URL}/v1/chat/completions",
+                    json=vllm_payload) as resp:
+                    done_seen = False
+                    async for line in resp.aiter_lines():
+                        if not line:
+                            continue
+                        if line.startswith("data:") and not done_seen:
+                            delta, reasoning, done, finish, usage = parse_sse_stream(line)
+                            if delta:
+                                assistant_accum.append(delta)
+                            if reasoning:
+                                reasoning_accum.append(reasoning)
+                            if usage:
+                                logger.info(f"Session {session_id}: vllm_usage={usage}")
+                            if done:
+                                done_seen = True
+                                logger.info(f"Session {session_id}: finish_reason={finish}")
+                        yield line + "\n\n"
 
-        async with sem:  # limit max concurrent vllm calls
-            async with stream_client.stream(
-                "POST",
-                f"{VLLM_URL}/v1/chat/completions",
-                json=vllm_payload) as resp:
-                done_seen = False
-                async for line in resp.aiter_lines():
-                    if not line:
-                        continue
-                    if line.startswith("data:") and not done_seen:
-                        delta, done, finish, usage = parse_sse_stream(line)
-                        if delta:
-                            assistant_accum.append(delta)
-                        if usage:
-                            logger.info(f"Session {session_id}: vllm_usage={usage}")
-                        if done:
-                            done_seen = True
-                            logger.info(f"Session {session_id}: finish_reason={finish}")
-                    yield line + "\n\n"
+        finally:
+            final_accum = "".join(assistant_accum).strip()
+            r_final_accum = "".join(reasoning_accum).strip()
 
-        final = "".join(assistant_accum).strip()
-        if final:
-            condensed, _ = condense_assistant(final) 
-            await append_pair(request,session_id, user_id, message, condensed)   # redis write (+ optional embed enqueue)
+            if final_accum:
+                clean = re.sub(r"\n{3,}", "\n\n", final_accum).strip()
 
+                memory_parts: list[str] = []
+                if search_trace:
+                    memory_parts.append(f"Searched: {'; '.join(search_trace)}")
+                if probe_reasoning:
+                    memory_parts.append(f"Tool rationale: {' | '.join(probe_reasoning)}")
+                if r_final_accum:
+                    memory_parts.append(f"Reasoning: {r_final_accum}")
+
+                memory_block = "\n\n".join(memory_parts) if memory_parts else ""
+                tool_context = format_search_context(tool_accum, top_n=1, per_result_chars=2500, header="[Prior search results]") if tool_accum else ""
+                
+
+                mem_tokens  = count_tokens([{"role": "system", "content": memory_block}]) if memory_block else 0
+                tool_tokens = count_tokens([{"role": "system", "content": tool_context}]) if tool_context else 0
+                clean_tokens = count_tokens([{"role": "assistant", "content": clean}])
+                logger.info(
+                    f"Session {session_id}: clean_tokens={clean_tokens} "
+                    f"memory_tokens={mem_tokens} tool_tokens={tool_tokens}"
+                )
+                try:
+                    await append_pair(request,session_id, user_id, message, clean)   # redis write (+ optional embed enqueue)
+                    await append_context(request, session_id, user_id, memory_context=memory_block, rag_context=rag_context, tool_context=tool_context) 
+                except Exception as e:
+                    logger.exception(f"Failed to append session context: {e}")
+                
     return StreamingResponse(stream_agent(), media_type="text/event-stream")
+
+           
 
 
 

@@ -69,7 +69,7 @@ async def get_session_context(request: Request, session_id: str, user_id: str) -
     pairs_key = f"session:{session_id}:pairs"
     
     pairs = await get_redis_list(request, pairs_key, limit=MAX_CONTEXT_PAIRS)
-    context = await get_redis_list(request, context_key)
+    context = await get_redis_list(request, context_key, limit=2)  # get last 2 contexts (rag + memory + search)
   
     return {"pairs": pairs, "context": context}
 
@@ -79,8 +79,9 @@ async def append_context(
         request: Request,
         session_id: str,
         user_id: str,
-        search_context: Optional[str],
+        memory_context: Optional[str],
         rag_context: Optional[str],
+        tool_context: Optional[str],
     ) -> None:
 
     redis_pool = request.app.state.redis_pool
@@ -88,8 +89,9 @@ async def append_context(
     
     context_key = f"session:{session_id}:context"
     context_obj = {
-        "search_context": search_context or "",
         "rag_context": rag_context or "",
+        "memory_context": memory_context or "",
+        "tool_context": tool_context or "", # placeholder for future if we want to distinguish between retrieved vs generated context
     }
     await redis_pool.rpush(context_key, json.dumps(context_obj))
     await redis_pool.expire(context_key, SESSION_TTL)
