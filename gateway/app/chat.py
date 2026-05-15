@@ -87,6 +87,9 @@ RAG_GROUNDING_PROMPT = """You have been provided with excerpts from this user's 
 4. The user's CURRENT message always takes precedence. If a past excerpt contradicts what they are saying now, defer to the current message.
 """
 
+TOOL_CONTEXT_MARKER = "Prior turn search results:"
+RAG_CONTEXT_MARKER = "User's retrieved information:"
+
 _tokenizer = AutoTokenizer.from_pretrained(
     os.environ.get("VLLM_MODEL", "Qwen/Qwen3-8B"),
     trust_remote_code=True,
@@ -121,53 +124,69 @@ def build_context_messages(
         session: dict, 
         current_message: str, 
         rag_context: Optional[str] = None, 
-        )-> list[dict]: 
-    messages = [{"role": "system", "content": get_system_prompt()}] 
-    has_rag = bool(rag_context) or any(c.get("rag_context") for c in session["context"])
-    if has_rag:
-        messages.append({"role": "system", "content": RAG_GROUNDING_PROMPT})    
+        )-> tuple[list[dict], list[dict]]: 
+    # probe message lightweight only needs last couple of messages
+    # messages is the full context the model needs for correct answer. 
+    sys_msg = {"role": "system", "content": get_system_prompt()}
+    pair_msgs: list[dict] = []
+    full_msgs: list[dict] = [sys_msg]
+
+    curr_msg ={"role": "user", "content": current_message}
 
     for pair in session["pairs"]: # get session takes already max 6 pairs
-        messages.append({"role": "user", "content": pair.get("user_text", "")}) 
-        messages.append({"role": "assistant", "content": pair.get("assistant_text", "")}) 
+        pair_msgs.append({"role": "user", "content": pair.get("user_text", "")}) 
+        pair_msgs.append({"role": "assistant", "content": pair.get("assistant_text", "")}) 
+    
+    # Recent pairs only — for probe
+    recent = session["pairs"][-2:]
+    probe_pair_msgs: list[dict] = []
+    for pair in recent:
+        probe_pair_msgs.append({"role": "user", "content": pair.get("user_text", "")})
+        probe_pair_msgs.append({"role": "assistant", "content": pair.get("assistant_text", "")})
+
+    probe_msgs = [sys_msg, *probe_pair_msgs, curr_msg]  # Last 2 pairs for probing
+    full_msgs.extend(pair_msgs)
+
+    
+    rag_chunks: list[str] = [c["rag_context"] for c in session["context"] if c.get("rag_context")]
+    if rag_context:
+        rag_chunks.append(rag_context)
+    if rag_chunks:
+        full_msgs.append({"role": "system", "content": RAG_GROUNDING_PROMPT}) 
+        full_msgs.append({"role": "system", "content": RAG_CONTEXT_MARKER + "\n" + "\n\n".join(rag_chunks)})   
+   
     for context in session["context"]:
-        if context.get("rag_context"):
-            messages.append({"role": "system", "content": context["rag_context"]})
-        if context.get("memory_context"):
-            messages.append({"role": "system", "content": f"[Prior turn memory]\n{context['memory_context']}"})
         if context.get("tool_context"):
-            messages.append({"role": "system", "content": context["tool_context"]})
-    if rag_context: 
-        messages.append({"role": "system", "content": rag_context}) 
+            full_msgs.append({"role": "system", "content": f"{TOOL_CONTEXT_MARKER}{context['tool_context']}"})
+    
+    full_msgs.append(curr_msg)
   
-    messages.append({"role": "user", "content": current_message}) 
-    return messages
+    return probe_msgs, full_msgs
 
 # sse stream done when "finish_reason": "stop" recieved so need to have flag for when recieved
-def parse_sse_stream(line: str) -> tuple[str, str, bool, str, dict]:
-    empty = ("", "", False, "", {})
+def parse_sse_stream(line: str) -> tuple[str, bool, str, dict]:
+    empty = ("", False, "", {})
     if not line.startswith("data:"):
         return empty
     data = line[len("data:"):].strip()
     if not data:
         return empty
     if data == "[DONE]":
-        return ("", "", True, "stop",{})
+        return ("", True, "stop",{})
     try:
         obj = json.loads(data)
         choices = obj.get("choices") or []
         if not choices:
-            return ("", "", False, "", usage)
+            return empty
         
         c0 = choices[0] or {}
         delta = c0.get("delta") or {}
         content = delta.get("content") or ""
-        reasoning_content = delta.get("reasoning_content") or ""
         
         finish = c0.get("finish_reason") or ""
         done = finish in ("stop", "length") 
         usage =obj.get("usage")
-        return (content, reasoning_content, done, finish, usage)
+        return (content, done, finish, usage)
     
     except json.JSONDecodeError:
         return empty
@@ -201,19 +220,18 @@ async def chat(request: Request):
         rag_context = await retrieve_rag_context(request, user_id, query=message)
 
     sem = request.app.state.vllm_sem
-    probe_reasoning: list[str] = []
-    search_trace: list[str] = []
-    tool_accum: list[dict] = []
 
     async def stream_agent():
         #  1: Decide tool usage 
-        messages = build_context_messages(session, message, rag_context=rag_context)
+        probe_msgs, messages = build_context_messages(session, message, rag_context=rag_context)
         did_search = False 
+        tool_accum: list[dict] = []
+        tool_history: list[dict] = []
         for tool_iter in range(MAX_TOOL_ITER):
 
             probe_payload = {
                 "model": model,
-                "messages": messages,
+                "messages": probe_msgs + tool_history,
                 "tools": [WEB_SEARCH_TOOL],
                 "tool_choice": "auto",
                 "max_tokens": 2000, 
@@ -234,11 +252,10 @@ async def chat(request: Request):
             
             did_search = True
             #capture tool use reasoning
-            probe_reason = msg.get("reasoning_content") or ""
-            if probe_reason:
-                probe_reasoning.append(probe_reason.strip())
+            #probe_reason = msg.get("reasoning_content") or "" was for reasoning parser but its noise. 
+           
             #append assistant turn with tool calls
-            messages.append({
+            tool_history.append({
                 "role": "assistant",
                 "content": msg.get("content") or "",
                 "tool_calls": tool_calls
@@ -250,7 +267,7 @@ async def chat(request: Request):
                 tc_id = tc.get("id")
                 logger.info(f"Session {session_id}: tool_call ID:{tc_id}")
                 if fn.get("name") != "web_search":
-                    messages.append({
+                    tool_history.append({
                     "role": "tool",
                     "tool_call_id": tc_id,
                     "content": f"Error: unknown tool {fn.get('name')}"
@@ -264,7 +281,7 @@ async def chat(request: Request):
                     args = {}
                 query = args.get("query", message)
                 max_results = int(args.get("max_results", TCALL_MAX_RESULTS))
-                search_trace.append(query)
+                #search_trace.append(query)
                 yield f"event: tool_use\ndata: {json.dumps({'query': query, 'iter': tool_iter})}\n\n"
                  
                 try:
@@ -280,7 +297,7 @@ async def chat(request: Request):
                 yield f"event: tool_result\ndata: {json.dumps({'query': query, 'results_count': count})}\n\n"
                 logger.info(f"Session {session_id}: iter={tool_iter} '{query}' → {count} results")
 
-                messages.append({
+                tool_history.append({
                     "role": "tool",
                     "tool_call_id": tc_id,
                     "content": tool_content
@@ -288,13 +305,18 @@ async def chat(request: Request):
                 
         else:
             # max loop reached without break
-            messages.append({
+            tool_history.append({
                 "role": "system",
                 "content": "Maximum searches done, used all tool iterations. Now answer with gathered information."
             })
+        messages.extend(tool_history)  # add tool context to final messages
         
         #Grounding prompt telling model how to use search results
-        if did_search:
+        has_prior_search = any(
+            m.get("role") == "system" and (m.get("content") or "").startswith(TOOL_CONTEXT_MARKER)
+            for m in messages
+)
+        if did_search or has_prior_search:
             messages.insert(1, {"role": "system", "content": SEARCH_GROUNDING_PROMPT})
 
 
@@ -312,7 +334,7 @@ async def chat(request: Request):
             "stream_options": {"include_usage": True}
         }
         assistant_accum: list[str] = []
-        reasoning_accum: list[str] = []
+        #reasoning_accum: list[str] = []
         try:
             async with sem:  # limit max concurrent vllm calls
                 async with stream_client.stream(
@@ -324,11 +346,9 @@ async def chat(request: Request):
                         if not line:
                             continue
                         if line.startswith("data:") and not done_seen:
-                            delta, reasoning, done, finish, usage = parse_sse_stream(line)
+                            delta, done, finish, usage = parse_sse_stream(line)
                             if delta:
                                 assistant_accum.append(delta)
-                            if reasoning:
-                                reasoning_accum.append(reasoning)
                             if usage:
                                 logger.info(f"Session {session_id}: vllm_usage={usage}")
                             if done:
@@ -338,33 +358,21 @@ async def chat(request: Request):
 
         finally:
             final_accum = "".join(assistant_accum).strip()
-            r_final_accum = "".join(reasoning_accum).strip()
 
             if final_accum:
                 clean = re.sub(r"\n{3,}", "\n\n", final_accum).strip()
 
-                memory_parts: list[str] = []
-                if search_trace:
-                    memory_parts.append(f"Searched: {'; '.join(search_trace)}")
-                if probe_reasoning:
-                    memory_parts.append(f"Tool rationale: {' | '.join(probe_reasoning)}")
-                if r_final_accum:
-                    memory_parts.append(f"Reasoning: {r_final_accum}")
-
-                memory_block = "\n\n".join(memory_parts) if memory_parts else ""
+            
                 tool_context = format_search_context(tool_accum, top_n=1, per_result_chars=2500, header="[Prior search results]") if tool_accum else ""
                 
-
-                mem_tokens  = count_tokens([{"role": "system", "content": memory_block}]) if memory_block else 0
                 tool_tokens = count_tokens([{"role": "system", "content": tool_context}]) if tool_context else 0
                 clean_tokens = count_tokens([{"role": "assistant", "content": clean}])
                 logger.info(
-                    f"Session {session_id}: clean_tokens={clean_tokens} "
-                    f"memory_tokens={mem_tokens} tool_tokens={tool_tokens}"
+                    f"Session {session_id}: clean_tokens={clean_tokens}, tool_tokens={tool_tokens}"
                 )
                 try:
                     await append_pair(request,session_id, user_id, message, clean)   # redis write (+ optional embed enqueue)
-                    await append_context(request, session_id, user_id, memory_context=memory_block, rag_context=rag_context, tool_context=tool_context) 
+                    await append_context(request, session_id, user_id, rag_context=rag_context, tool_context=tool_context) 
                 except Exception as e:
                     logger.exception(f"Failed to append session context: {e}")
                 
