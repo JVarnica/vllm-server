@@ -99,7 +99,7 @@ async def search_and_scrape(request: Request, query: str, max_results: int) -> l
 
 def format_search_context(
         results: list[dict], 
-        max_chars: int = S_CONTEXT_MAX_CHARS, 
+        max_chars: Optional[int] = S_CONTEXT_MAX_CHARS, 
         top_n: Optional[int] = None,
         per_result_chars: Optional[int] = None,
         header: str = "[Web search results]",
@@ -111,8 +111,8 @@ def format_search_context(
         # rank by score when filtering — otherwise SearXNG order is preserved
         results = sorted(results, key=lambda r: r.get("score", 0), reverse=True)[:top_n]
 
-    lines = [header]
-    total_chars = len(lines[0]) 
+    lines = [header] if header else []
+    total_chars = len(header)
 
     for i, r in enumerate(results, start=1):
         title = (r.get("title") or "").strip()
@@ -124,12 +124,11 @@ def format_search_context(
 
 
         entry = f"[{i}] {title}\nURL: {url}\n{content}".strip()
-        if total_chars + len(entry) + 2 > max_chars:
+        if max_chars is not None and total_chars + len(entry) + 2 > max_chars:
             remaining = max_chars - total_chars - 2
             if remaining > 200:
                 entry = entry[:remaining].rstrip() + "…"
-            else:
-                break
+            break
         lines.append(entry)
         total_chars += len(entry) + 2
 

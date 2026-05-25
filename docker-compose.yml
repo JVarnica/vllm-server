@@ -92,16 +92,13 @@ services:
 # ===========================================
 # DeepResearch
 # ===========================================
-  deep-research:
+  research-agent:
     build:
       context: ./research-agent
       dockerfile: Dockerfile
-    container_name: deep-research
-    expose:
-      - "8001"
-    volumes:
-      - ./research-output:/app/output
-      - ./research-cache:/app/cache
+    container_name: research-agent
+    ports:
+      - "8001:8001"
     env_file:
       - .env
     environment:
@@ -109,8 +106,6 @@ services:
       - VLLM_URL=${VLLM_URL}
       - VLLM_MODEL=${VLLM_MODEL}
       - REDIS_URL=${REDIS_URL}
-      - MAX_CONCURRENT_TASKS=${MAX_CONCURRENT_TASKS}
-      - OUTPUT_DIR=${OUTPUT_DIR}
     depends_on:
       vllm:
         condition: service_healthy
@@ -118,11 +113,6 @@ services:
         condition: service_started
       redis:
         condition: service_started
-    healthcheck:
-      test: ["CMD", "curl", "-f", "${HEALTH_CHECK_DP_URL}"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
     restart: unless-stopped
     networks:
       - internal
@@ -159,8 +149,8 @@ services:
         condition: service_healthy
       searxng:
         condition: service_started
-      deep-research:
-        condition: service_healthy
+      research-agent:
+        condition: service_started
       auth:
         condition: service_started
       redis:
@@ -197,7 +187,7 @@ services:
 # Redis - Task queue and caching
 # ===========================================
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
     container_name: redis
     expose: 
       - "6379"

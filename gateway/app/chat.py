@@ -148,16 +148,16 @@ def build_context_messages(
     full_msgs.extend(pair_msgs)
 
     
-    rag_chunks: list[str] = [c["rag_context"] for c in session["context"] if c.get("rag_context")]
+    rag_chunks: list[str] = list(session.get("rag_context") or [])  # get all rag context chunks available from session
     if rag_context:
         rag_chunks.append(rag_context)
     if rag_chunks:
         full_msgs.append({"role": "system", "content": RAG_GROUNDING_PROMPT}) 
         full_msgs.append({"role": "system", "content": RAG_CONTEXT_MARKER + "\n" + "\n\n".join(rag_chunks)})   
    
-    for context in session["context"]:
-        if context.get("tool_context"):
-            full_msgs.append({"role": "system", "content": f"{TOOL_CONTEXT_MARKER}{context['tool_context']}"})
+    prior_tool: str | None = session.get("tool_context")
+    if prior_tool:
+        full_msgs.append({"role": "system", "content": f"{TOOL_CONTEXT_MARKER}\n{prior_tool}"})
     
     full_msgs.append(curr_msg)
   
@@ -286,6 +286,7 @@ async def chat(request: Request):
                  
                 try:
                     search_results = await search_and_scrape(request, query, max_results=max_results)
+                    # tool content given to model 
                     tool_content = format_search_context(search_results)
                     tool_accum.extend(search_results)
                     count = len(search_results)
@@ -296,6 +297,7 @@ async def chat(request: Request):
     
                 yield f"event: tool_result\ndata: {json.dumps({'query': query, 'results_count': count})}\n\n"
                 logger.info(f"Session {session_id}: iter={tool_iter} '{query}' → {count} results")
+            
 
                 tool_history.append({
                     "role": "tool",
@@ -315,7 +317,7 @@ async def chat(request: Request):
         has_prior_search = any(
             m.get("role") == "system" and (m.get("content") or "").startswith(TOOL_CONTEXT_MARKER)
             for m in messages
-)
+            )
         if did_search or has_prior_search:
             messages.insert(1, {"role": "system", "content": SEARCH_GROUNDING_PROMPT})
 
@@ -362,8 +364,8 @@ async def chat(request: Request):
             if final_accum:
                 clean = re.sub(r"\n{3,}", "\n\n", final_accum).strip()
 
-            
-                tool_context = format_search_context(tool_accum, top_n=1, per_result_chars=2500, header="[Prior search results]") if tool_accum else ""
+                # tool_context to append to redis set, so previous turn availiable. no list as no point taking more just last one
+                tool_context = format_search_context(tool_accum, max_chars=None, top_n=2,per_result_chars=1000, header="") if tool_accum else "" # do the header in build_messaqges
                 
                 tool_tokens = count_tokens([{"role": "system", "content": tool_context}]) if tool_context else 0
                 clean_tokens = count_tokens([{"role": "assistant", "content": clean}])

@@ -65,16 +65,16 @@ async def health():
 async def research(request: Request):
     return await forward(request, os.environ["DPR_URL"])
 
-@app.post("/research/{task_id}")
-async def research_status(request: Request, task_id: str):
+@app.get("/research/{task_id}")
+async def research_status(request: Request):
     return await forward(request, os.environ["DPR_URL"])
 
-@app.get("/research/{task_id}/stream")
-async def research_stream(request: Request, task_id: str):
-    return await forward_stream(request, os.environ["DPR_URL"])
+@app.get("/research/{task_id}/events")
+async def research_events(request: Request):
+    return await forward(request, os.environ["DPR_URL"])
 
 @app.delete("/research/{task_id}")
-async def research_cancel(request: Request, task_id: str):
+async def research_cancel(request: Request):
     return await forward(request, os.environ["DPR_URL"])
 
             

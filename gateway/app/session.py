@@ -2,13 +2,14 @@ import os
 import time
 import uuid
 import json
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, TypedDict
 from pydantic import BaseModel
 from fastapi import Request, APIRouter, HTTPException
 
 from app.auth import get_user
 
 MAX_CONTEXT_PAIRS = 6
+MAX_RAG_CONTEXT = 4
 EMBED_STREAM = "embed_jobs"
 EMBED_CONSUMER_GROUP = "embed_workers"
 EMBED_CONSUMER_NAME = f"f-w{uuid.uuid4().hex[:6]}"
@@ -21,6 +22,11 @@ class AppendPairIn(BaseModel):
     session_id: str
     user_text: str
     assistant_text: str
+
+class SessionContextOut(TypedDict):
+    pairs: List[dict]
+    rag_context: List[dict]
+    tool_context: str | None
 
 
 SESSION_TTL = 3600  # 1 hour
@@ -54,7 +60,7 @@ async def get_redis_list(request: Request, key: str, limit: int = 0) -> list[dic
             continue
     return out
 
-async def get_session_context(request: Request, session_id: str, user_id: str) -> list[dict]:
+async def get_session_context(request: Request, session_id: str, user_id: str) -> SessionContextOut:
     redis_pool = request.app.state.redis_pool
     assert redis_pool is not None
 
@@ -65,13 +71,16 @@ async def get_session_context(request: Request, session_id: str, user_id: str) -
     if meta.get("user_id") != user_id:
         raise HTTPException(403, "Session does not belong to user")
 
-    context_key = f"session:{session_id}:context"
+    rag_context_key = f"session:{session_id}:rag_context"
+    tool_context_key = f"session:{session_id}:tool_context"
     pairs_key = f"session:{session_id}:pairs"
     
     pairs = await get_redis_list(request, pairs_key, limit=MAX_CONTEXT_PAIRS)
-    context = await get_redis_list(request, context_key, limit=2)  # get last 2 contexts (rag + memory + search)
+    rag_context = await get_redis_list(request, rag_context_key, limit=MAX_RAG_CONTEXT)
+    tool_context = await redis_pool.get(tool_context_key)
+
   
-    return {"pairs": pairs, "context": context}
+    return {"pairs": pairs, "rag_context": rag_context, "tool_context": tool_context}
 
 
 # rag/search context list
@@ -79,7 +88,6 @@ async def append_context(
         request: Request,
         session_id: str,
         user_id: str,
-        memory_context: Optional[str],
         rag_context: Optional[str],
         tool_context: Optional[str],
     ) -> None:
@@ -87,14 +95,15 @@ async def append_context(
     redis_pool = request.app.state.redis_pool
     assert redis_pool is not None
     
-    context_key = f"session:{session_id}:context"
-    context_obj = {
-        "rag_context": rag_context or "",
-        "memory_context": memory_context or "",
-        "tool_context": tool_context or "", # placeholder for future if we want to distinguish between retrieved vs generated context
-    }
-    await redis_pool.rpush(context_key, json.dumps(context_obj))
-    await redis_pool.expire(context_key, SESSION_TTL)
+    rag_context_key = f"session:{session_id}:rag_context"
+    tool_context_key = f"session:{session_id}:tool_context"
+
+    if rag_context:
+        await redis_pool.rpush(rag_context_key, json.dumps(rag_context))
+        await redis_pool.expire(rag_context_key, SESSION_TTL)
+    if tool_context:
+        await redis_pool.set(tool_context_key, tool_context or "", ex=SESSION_TTL)
+    
 
 
 async def append_pair(

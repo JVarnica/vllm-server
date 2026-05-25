@@ -1,10 +1,11 @@
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
-sse-starlette==2.2.1
 httpx==0.28.1
-redis==5.2.1
 pydantic==2.10.4
-langchain-openai==0.3.12
-langchain-core==0.3.61
-langchain-community==0.3.21
-beautifulsoup4==4.12.3
+trafilatura==2.0.0
+redis==5.2.1
+langgraph==0.2.62
+langchain-core==0.3.29
+langchain-openai==0.2.14
+langgraph-checkpoint-redis==0.0.6
+typing-extensions>=4.12.0
