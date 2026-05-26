@@ -40,7 +40,7 @@ async def research_status(task_id: str, request: Request):
 
 
 @router.get("/research/{task_id}/events")
-async def research_stream(task_id: str, request: Request, since: int = 0):
+async def research_polling(task_id: str, request: Request, since: int = 0):
     """Polling endpoint. Returns events from `since` onward + current task state."""
     deps = request.app.state.deps
     record = await get_task(deps.redis, task_id)

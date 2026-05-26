@@ -343,6 +343,9 @@ def fan_out_sections(state: OverallState) -> list[Send]:
 
 WRITE_SECTION_PROMPT = """You are writing ONE section of a research report.
 
+DO NOT attempt to include section title or any heading in the output — just write the body. 
+The stitcher will handle formatting. 
+
 Research question: {question}
 Section title: {title}
 Section angle: {angle}

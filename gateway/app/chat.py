@@ -53,6 +53,10 @@ WEB_SEARCH_TOOL = {
             "that may have changed after your training cutoff. "
             "Do NOT use this for: general knowledge, math, coding, definitions, "
             "explanations of concepts, opinions, or conversational replies."
+            "If the question names multiple entities or asks for a comparison "
+            "('X vs Y', 'compare A and B', 'both X and Y', or any question "
+            "covering two or more independent facts), emit one web_search call "
+            "per entity in parallel rather than a single combined query. "
         ),
         "parameters": {
             "type": "object",
@@ -288,7 +292,9 @@ async def chat(request: Request):
                     search_results = await search_and_scrape(request, query, max_results=max_results)
                     # tool content given to model 
                     tool_content = format_search_context(search_results)
-                    tool_accum.extend(search_results)
+                    tc_tokens = count_tokens([{"role": "tool", "content": tool_content}])
+                    logger.info(f"Session {session_id}: tool_call ID:{tc_id} tool_tokens:{tc_tokens}")
+                    tool_accum.extend(search_results) # for context not this req
                     count = len(search_results)
                 except Exception as e:
                     tool_content = f"Error during web search: {str(e)}"
