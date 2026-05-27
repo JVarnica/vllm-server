@@ -1,0 +1,3 @@
+[submodule "research-agent"]
+	path = research-agent
+	url = https://github.com/JVarnica/research-agent.git
