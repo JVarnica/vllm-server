@@ -12,6 +12,11 @@ search:
     - html
     - json
 
+outgoing:
+  requests_timeout: 5.0
+  max_request_timeout: 10.0
+
+  
 engines:
   - name: google
     engine: google
@@ -21,6 +26,16 @@ engines:
   - name: duckduckgo
     engine: duckduckgo
     shortcut: ddg
+    disabled: true
+
+  - name: brave
+    engine: brave
+    shortcut: b
+    disabled: true
+
+  - name: bing
+    engine: bing
+    shortcut: bi
     disabled: false
 
   - name: wikipedia
@@ -28,7 +43,50 @@ engines:
     shortcut: wp
     disabled: false
 
-  - name: bing
-    engine: bing
-    shortcut: bi
+  - name: arxiv
+    engine: arxiv
+    shortcut: ax
+    timeout: 10.0
     disabled: false
+
+  - name: semantic_scholar
+    engine: semantic_scholar
+    shortcut: ss
+    disabled: true
+  
+  - name: pubmed
+    engine: pubmed
+    shortcut: pm
+    disabled: false
+
+  - name: crossref
+    engine: crossref
+    shortcut: cr
+    disabled: false
+
+  - name: github
+    engine: github
+    shortcut: gh
+    disabled: false
+  
+  - name: stackoverflow
+    engine: stackexchange
+    shortcut: so
+    disabled: false
+
+hostnames:
+  remove:
+    - '(.*\.)?merriam-webster\.com$'
+    - '(.*\.)?dictionary\.cambridge\.org$'
+    - '(.*\.)?dictionary\.com$'
+    - '(.*\.)?collinsdictionary\.com$'
+    - '(.*\.)?thesaurus\.com$'
+    - '(.*\.)?pinterest\.com$'
+    - '(.*\.)?facebook\.com$'
+    - '(.*\.)?instagram\.com$'
+    - '(.*\.)?tiktok\.com$'
+    - '(.*\.)?x\.com$'
+    - '(.*\.)?twitter\.com$'
+    - '(.*\.)?linkedin\.com$'
+
+  
