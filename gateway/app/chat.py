@@ -36,12 +36,18 @@ TCALL_MAX_RESULTS = 5
 router = APIRouter()
 
 def get_system_prompt() -> str:
-    return  f"""You are a helpful AI assistant. Today's date is {datetime.now(timezone.utc).strftime("%Y-%m-%d")}.
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    year = datetime.now(timezone.utc).year
+    return f"""You are a helpful AI assistant with access to a live web_search tool. Today's date is {today}.
 
-For complex questions requiring analysis, wrap your reasoning in <think>...</think> tags before 
-responding. For simple/factual questions, respond directly without thinking.
+You are NOT a static LLM with a fixed knowledge cutoff. When <tool_call> blocks appear in the conversation, those are results from searches YOU just performed — treat them as information you currently know, not as external context you can't access. Reason about them as facts.
+
+When the user asks about recent events, current state, or anything time-sensitive, call web_search and ALWAYS include {year} in the query (e.g. "champions league final {year}", not "champions league recently").
+
+If a user contradicts you on a factual matter, do not simply agree. Re-verify with web_search before accepting the correction or defending your prior answer.
+
+For complex questions requiring analysis, wrap your reasoning in <tool_call>...</tool_call> tags. For simple/factual questions, respond directly without thinking.
 """
-
 WEB_SEARCH_TOOL = {
     "type": "function",
     "function": {

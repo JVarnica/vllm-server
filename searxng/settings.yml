@@ -88,5 +88,23 @@ hostnames:
     - '(.*\.)?x\.com$'
     - '(.*\.)?twitter\.com$'
     - '(.*\.)?linkedin\.com$'
+    - '(.*\.)?medium\.com$'
+    - '(.*\.)?grammarly\.com$'
+    - '(.*\.)?jstor\.org$'
+    - '(.*\.)?books\.google\.co\.uk$'
+    - '(.*\.)?quora\.com$'
+    - '(.*\.)?tandfonline\.com$'           # 403 on PDFs
+    - '(.*\.)?sciencedirect\.com$'         # paywalled
+    - '(.*\.)?springer\.com$'              # paywalled
+    - '(.*\.)?link\.springer\.com$'        # same
+    - '(.*\.)?wiley\.com$'                 # paywalled
+    - '(.*\.)?onlinelibrary\.wiley\.com$'  # same
+    - '(.*\.)?proquest\.com$'              # 403/login wall
+    - '(.*\.)?studocu\.com$'               # 403
+    - '(.*\.)?ceeol\.com$'                 # 403
+    - '(.*\.)?academia\.edu$'              # interstitial wall, trafilatura fails
+    - '(.*\.)?researchgate\.net$'          # interstitial wall
+    - '(.*\.)?reddit\.com$'     
+    - '(.*\.)?youtube\.com$'      
 
   

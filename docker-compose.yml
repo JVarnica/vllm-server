@@ -46,7 +46,7 @@ services:
       --enable-auto-tool-choice
       --tool-call-parser hermes
       --enable-prefix-caching
-      --max-num-seqs 4
+      --max-num-seqs 16
       --kv-cache-dtype fp8 
     
 
@@ -76,8 +76,8 @@ services:
     image: searxng/searxng:latest
     container_name: searxng
     
-    ports:
-      - "8081:8080"
+    expose:
+      - "8080"
     
     volumes:
       - ./searxng:/etc/searxng
