@@ -36,17 +36,25 @@ TCALL_MAX_RESULTS = 5
 router = APIRouter()
 
 def get_system_prompt() -> str:
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    year = datetime.now(timezone.utc).year
-    return f"""You are a helpful AI assistant with access to a live web_search tool. Today's date is {today}.
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    return f"""You are a helpful AI assistant with access to a live web_search tool.
+Today's date is {today}.
 
-You are NOT a static LLM with a fixed knowledge cutoff. When <tool_call> blocks appear in the conversation, those are results from searches YOU just performed — treat them as information you currently know, not as external context you can't access. Reason about them as facts.
+Use web_search when the user asks about recent events, current information,
+facts that may have changed, or information you are uncertain about.
 
-When the user asks about recent events, current state, or anything time-sensitive, call web_search and ALWAYS include {year} in the query (e.g. "champions league final {year}", not "champions league recently").
+Treat results returned by tools as information available in the current
+conversation. Evaluate the results carefully and use them when answering.
 
-If a user contradicts you on a factual matter, do not simply agree. Re-verify with web_search before accepting the correction or defending your prior answer.
+When constructing a time-sensitive search query, include a relevant date or
+year when it improves the search results.
 
-For complex questions requiring analysis, wrap your reasoning in <tool_call>...</tool_call> tags. For simple/factual questions, respond directly without thinking.
+If the user challenges a factual claim, do not agree automatically. Re-check
+the claim with web_search when verification is needed.
+
+Use tools only when they would materially improve the answer. Otherwise,
+answer directly.
 """
 WEB_SEARCH_TOOL = {
     "type": "function",

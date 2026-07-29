@@ -22,6 +22,7 @@ class SaveSessionIn(BaseModel):
 
 @router.post("/save/save_chat")
 async def save_chat(request: Request, body: SaveSessionIn):
+    """Gets the context from Redis and adds to sqlite if doesn't exist already or updates. """
     user_id = request.state.user_id
     redis_pool = request.app.state.redis_pool
     sqlite_pool = request.app.state.sqlite_pool
@@ -87,7 +88,7 @@ async def save_chat(request: Request, body: SaveSessionIn):
             (convo_id, user_id, title, now, now),
         )
         
-        # Only insert pairs newer than what SQLite already has
+    # Only insert pairs newer than what SQLite already has
     new_count = 0
     for p in pairs:
         turn = int(p.get("pair_index", 0))
