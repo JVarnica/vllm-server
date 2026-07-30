@@ -4,7 +4,7 @@ import uuid
 import json
 import re
 from datetime import datetime, timezone
-from typing import List, Tuple,Optional
+from typing import List, Tuple,Optional, Any
 from pydantic import BaseModel
 from fastapi import Request, APIRouter, HTTPException
 from fastapi.responses import Response, JSONResponse, StreamingResponse
@@ -14,12 +14,14 @@ import asyncio
 from app.session import get_session_context, append_pair, append_context
 from app.rag import retrieve_rag_context
 from app.context import search_and_scrape, format_search_context
+from calculator import CALCULATOR_TOOL, execute_calculator_tool
 
 import logging
 logger = logging.getLogger("uvicorn.error")
 
 VLLM_URL = os.environ["VLLM_URL"]
 SEARXNG_INTERNAL_URL = os.environ["SEARXNG_INTERNAL_URL"]
+SANDBOX_URL = os.environ["SANDBOX_URL"]
 
 EMBEDDING_DIM = 384
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
@@ -31,31 +33,32 @@ MARGIN_SAFETY = 128
 # agentic loop 
 MAX_TOOL_ITER = 3
 TCALL_MAX_RESULTS = 5 
+TOOL_OUTPUT_MAX_CHARS = int(os.environ.get("TOOL_OUTPUT_MAX_CHARS", "12000"))
+SANDBOX_TIMEOUT_SECONDS = int(os.environ.get("SANDBOX_TIMEOUT_SECONDS", "15"))
+
+TOOL_CONTEXT_MARKER = "Prior turn tool results:"
+RAG_CONTEXT_MARKER = "User's retrieved information:"
 
 
 router = APIRouter()
 
 def get_system_prompt() -> str:
     now = datetime.now(timezone.utc)
-    today = now.strftime("%Y-%m-%d")
-    return f"""You are a helpful AI assistant with access to a live web_search tool.
-Today's date is {today}.
+    today = now.strftime("%A %Y-%m-%d")
+    return f"""You are a helpful AI assistant with access to tools.
+Today is {today}.
 
-Use web_search when the user asks about recent events, current information,
-facts that may have changed, or information you are uncertain about.
+Available capabilities:
+    - web_search: current, recent, or externally verifiable information.
+    - calculate: exact arithmetic and mathematical expressions.
 
-Treat results returned by tools as information available in the current
-conversation. Evaluate the results carefully and use them when answering.
-
-When constructing a time-sensitive search query, include a relevant date or
-year when it improves the search results.
-
-If the user challenges a factual claim, do not agree automatically. Re-check
-the claim with web_search when verification is needed.
-
-Use tools only when they would materially improve the answer. Otherwise,
-answer directly.
+Tool Rules:
+1. Use web_search when facts may have changed, are recent, or need verification.
+2. Use calculate for ANY arithmetic beyond single-digit sums. Never do multi-digit arithmetic yourself.
+3. Do not call tools when a direct answer is sufficient.
+4. Treat tool results as information available in the current conversation.
 """
+
 WEB_SEARCH_TOOL = {
     "type": "function",
     "function": {
@@ -63,21 +66,16 @@ WEB_SEARCH_TOOL = {
         "description": (
             "Search the web for current, recent, or specific factual information. "
             "Use this when the user asks about: recent events, news, current "
-            "prices/scores/weather, specific people/companies/products, or anything "
+            "prices/scores/weather, specific people/companies/products, or facts "
             "that may have changed after your training cutoff. "
-            "Do NOT use this for: general knowledge, math, coding, definitions, "
-            "explanations of concepts, opinions, or conversational replies."
-            "If the question names multiple entities or asks for a comparison "
-            "('X vs Y', 'compare A and B', 'both X and Y', or any question "
-            "covering two or more independent facts), emit one web_search call "
-            "per entity in parallel rather than a single combined query. "
+            "Do not use for arithmetic or code execution."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Concise search query, 2-6 keywords. Avoid full sentences.",
+                    "description": "Concise search query. Avoid full sentences.",
                 },
                 "max_results": {
                     "type": "integer",
@@ -86,11 +84,41 @@ WEB_SEARCH_TOOL = {
                 },
             },
             "required": ["query"],
+            "additionalProperties": False,
         },
     },
 }
+
+RUN_PYTHON_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "run_python",
+        "description": (
+            "Execute python in an isolated sandbox. Use for exact maths, statistics, data transformations, simulations, "
+            "or checking code behavior. Print every final value needed for the answer. "
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "Complete Python code to execute.",
+                },
+                "timeout_seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 30,
+                    "default": SANDBOX_TIMEOUT_SECONDS,
+                },
+            },
+            "required": ["code"],
+            "additionalProperties": False,
+        }
+    }
+}
+
+
 SEARCH_GROUNDING_PROMPT = """You have been provided with web search results below. Follow these rules strictly:
- 
 1. Base your answer ONLY on the information in the search results provided.
 2. Do NOT fabricate facts, scores, dates, names, or statistics not present in the results.
 3. Cite sources by number [1], [2] etc when stating facts from the results.
@@ -105,24 +133,46 @@ RAG_GROUNDING_PROMPT = """You have been provided with excerpts from this user's 
 4. The user's CURRENT message always takes precedence. If a past excerpt contradicts what they are saying now, defer to the current message.
 """
 
-TOOL_CONTEXT_MARKER = "Prior turn search results:"
-RAG_CONTEXT_MARKER = "User's retrieved information:"
+CALCULATE_GROUNDING_PROMPT = """You have been provided with results from a calculator tool below. Follow these rules strictly:
+1. Use the returned value EXACTLY as given. Do NOT recompute it or change the digits.
+2. Do NOT perform further arithmetic yourself. If you need another value, call the calculator again.
+3. If the tool returned an error, tell the user plainly what went wrong — do NOT substitute an estimate of your own.
+4. You may add units, currency symbols, or wording around the number, but the number itself must not change.
+5. Only round the value if the user explicitly asked for a certain number of decimal places.
+"""
 
 _tokenizer = AutoTokenizer.from_pretrained(
     os.environ.get("VLLM_MODEL", "Qwen/Qwen3-8B"),
     trust_remote_code=True,
 )
 
-def count_tokens(text: list[dict], tools: list[dict] | None = None,
-) -> int:
+
+TOOLS = [WEB_SEARCH_TOOL, CALCULATOR_TOOL]
+
+def _rough_token_estimate(value: Any) -> int:
+    if value is None:
+        return 0
+    if not isinstance(value, str):
+        value = json.dumps(value, ensure_ascii=False, default=str)
+    return max(1, len(value) // 4)
+
+def sse_event(event: str, data: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
+
+def count_tokens(messages: list[dict[str, Any]], tools: Optional[list[dict[str, Any]]] = None) -> int:
     """Prompt count need to render chat template"""
     try: 
-        rendered = _tokenizer.apply_chat_template(text, tools=tools, add_generation_prompt=True, tokenize=False)
+        rendered = _tokenizer.apply_chat_template(messages, tools=tools, add_generation_prompt=True, tokenize=False)
         return len(_tokenizer.encode(rendered, add_special_tokens=False))
     except Exception as e:
         logger.warning(f"apply_chat_template failed ({e}); falling back to estimate")
-        total = sum(count_tokens(m.get("content") or "") for m in text)
-        return total + 20 * len(text) + (200 if tools else 0)
+        total = 20 * len(messages)
+        for message in messages:
+            total += _rough_token_estimate(message.get("content"))
+            total += _rough_token_estimate(message.get("tool_calls"))
+        if tools:
+            total += _rough_token_estimate(tools)
+        return total
  
 
 def compute_max_tokens(messages: list[dict], tools: list[dict] | None = None) -> int:
@@ -134,7 +184,6 @@ def compute_max_tokens(messages: list[dict], tools: list[dict] | None = None) ->
         logger.warning(
             f"Prompt is {prompt_tokens} tokens — only {available} left for "
             f"generation (below MIN_GEN_TOKENS={MIN_GEN_TOKENS}). "
-            f"Consider truncating session history."
         )
     return max(MIN_GEN_TOKENS, available)
 
@@ -142,7 +191,7 @@ def build_context_messages(
         session: dict, 
         current_message: str, 
         rag_context: Optional[str] = None, 
-        )-> tuple[list[dict], list[dict]]: 
+        )-> tuple[list[dict[str, Any]], list[dict[str, Any]]]: 
     # probe message lightweight only needs last couple of messages
     # messages is the full context the model needs for correct answer. 
     sys_msg = {"role": "system", "content": get_system_prompt()}
@@ -165,15 +214,14 @@ def build_context_messages(
     probe_msgs = [sys_msg, *probe_pair_msgs, curr_msg]  # Last 2 pairs for probing
     full_msgs.extend(pair_msgs)
 
-    
-    rag_chunks: list[str] = list(session.get("rag_context") or [])  # get all rag context chunks available from session
+    rag_chunks = list(session.get("rag_context") or [])  # get all rag context chunks available from session
     if rag_context:
         rag_chunks.append(rag_context)
     if rag_chunks:
         full_msgs.append({"role": "system", "content": RAG_GROUNDING_PROMPT}) 
         full_msgs.append({"role": "system", "content": RAG_CONTEXT_MARKER + "\n" + "\n\n".join(rag_chunks)})   
    
-    prior_tool: str | None = session.get("tool_context")
+    prior_tool = session.get("tool_context")
     if prior_tool:
         full_msgs.append({"role": "system", "content": f"{TOOL_CONTEXT_MARKER}\n{prior_tool}"})
     
@@ -193,65 +241,70 @@ def parse_sse_stream(line: str) -> tuple[str, bool, str, dict]:
         return ("", True, "stop",{})
     try:
         obj = json.loads(data)
-        choices = obj.get("choices") or []
-        if not choices:
-            return empty
-        
-        c0 = choices[0] or {}
-        delta = c0.get("delta") or {}
-        content = delta.get("content") or ""
-        
-        finish = c0.get("finish_reason") or ""
-        done = finish in ("stop", "length") 
-        usage =obj.get("usage")
-        return (content, done, finish, usage)
-    
     except json.JSONDecodeError:
         return empty
+    choices = obj.get("choices") or []
+    if not choices:
+        return empty
+    
+    c0 = choices[0] or {}
+    delta = c0.get("delta") or {}
+    content = delta.get("content") or ""
+    
+    finish = c0.get("finish_reason") or ""
+    done = finish in ("stop", "length") 
+    usage =obj.get("usage")
+    return (content, done, finish, usage)
+
 
 @router.post("/chat")
 async def chat(request: Request):
     user_id = request.state.user_id
     stream_client = request.app.state.stream_client
     http_client = request.app.state.http_client
-    body = await request.json()
+    sem = request.app.state.vllm_sem
 
+    body = await request.json()
     session_id = body.get("session_id")
     message = body.get("message", "")
     # enable_search = body.get("enable_search", False)
     enable_rag = body.get("enable_rag", False)
     model = body.get("model", os.environ["VLLM_MODEL"])
-    temperature = body.get("temperature", 0.7)
+    temperature = body.get("temperature", 0.5)
     
-
     if not session_id:
         raise HTTPException(400, "session_id is required")
     if not message:
         raise HTTPException(400, "message is required")
     
     session = await get_session_context(request, session_id, user_id)
-    logger.info(f"Session {session_id}: received message: '{message}' session: {session}")
+    logger.info(f"Session {session_id}: received message: '{message}")
     
     #context pairs and rag context
     rag_context = None
     if enable_rag:
         rag_context = await retrieve_rag_context(request, user_id, query=message)
 
-    sem = request.app.state.vllm_sem
-
     async def stream_agent():
         #  1: Decide tool usage 
         probe_msgs, messages = build_context_messages(session, message, rag_context=rag_context)
-        did_search = False 
+
+        
         tool_accum: list[dict] = []
         tool_history: list[dict] = []
+
+        did_search = False 
+        did_calculate = False
+
         for tool_iter in range(MAX_TOOL_ITER):
 
             probe_payload = {
                 "model": model,
                 "messages": probe_msgs + tool_history,
-                "tools": [WEB_SEARCH_TOOL],
+                "tools": TOOLS,
                 "tool_choice": "auto",
+                "parallel_tool_calls": False,
+                "temperature": 0.1,
                 "max_tokens": 2000, 
                 "stream": False,
             }
@@ -267,24 +320,22 @@ async def chat(request: Request):
             tool_calls = msg.get("tool_calls") or []
             if not tool_calls:
                 break  # no tool calls, proceed to final response
-            
-            did_search = True
-            #capture tool use reasoning
-            #probe_reason = msg.get("reasoning_content") or "" was for reasoning parser but its noise. 
            
-            #append assistant turn with tool calls
             tool_history.append({
                 "role": "assistant",
                 "content": msg.get("content") or "",
-                "tool_calls": tool_calls
+                "tool_calls": tool_calls,
             })
             
-            #execute all tool calls sequentially currently
+            #execute all tool calls sequentially.
             for tc in tool_calls:
                 fn = tc.get("function") or {}
                 tc_id = tc.get("id")
+                tool_name = fn.get("name")
                 logger.info(f"Session {session_id}: tool_call ID:{tc_id}")
-                if fn.get("name") != "web_search":
+
+
+                if  tool_name not in ("web_search", "calculate"):
                     tool_history.append({
                     "role": "tool",
                     "tool_call_id": tc_id,
@@ -297,54 +348,84 @@ async def chat(request: Request):
                     args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
                 except json.JSONDecodeError:
                     args = {}
-                query = args.get("query", message)
-                max_results = int(args.get("max_results", TCALL_MAX_RESULTS))
-                #search_trace.append(query)
-                yield f"event: tool_use\ndata: {json.dumps({'query': query, 'iter': tool_iter})}\n\n"
-                 
-                try:
-                    search_results = await search_and_scrape(request, query, max_results=max_results)
-                    # tool content given to model 
-                    tool_content = format_search_context(search_results)
-                    tc_tokens = count_tokens([{"role": "tool", "content": tool_content}])
-                    logger.info(f"Session {session_id}: tool_call ID:{tc_id} tool_tokens:{tc_tokens}")
-                    tool_accum.extend(search_results) # for context not this req
-                    count = len(search_results)
-                except Exception as e:
-                    tool_content = f"Error during web search: {str(e)}"
-                    count = 0
-                    logger.exception(f"search failed for '{query}'")
-    
-                yield f"event: tool_result\ndata: {json.dumps({'query': query, 'results_count': count})}\n\n"
-                logger.info(f"Session {session_id}: iter={tool_iter} '{query}' → {count} results")
-            
 
-                tool_history.append({
-                    "role": "tool",
-                    "tool_call_id": tc_id,
-                    "content": tool_content
-                })
+                if tool_name == "web_search":
+                    query = str(args.get("query", message))
+                    max_results = int(args.get("max_results", TCALL_MAX_RESULTS))
+                    # for UI so knows that its searching
+                    yield sse_event("tool_use",{"name": tool_name, "iter": tool_iter,"query": query,},)
+
+                    try:
+                        search_results = await search_and_scrape(request, query, max_results=max_results)
+                        # tool content given to model 
+                        tool_content = format_search_context(search_results)
+                        tool_accum.extend(search_results) # for context not this req
+                        result_count = len(search_results)
+                        did_search = True
+
+                    except Exception as e:
+                        tool_content = f"Error during web search: {str(e)}"
+                        result_count = 0
+                        logger.exception(f"search failed for '{query}'")
+        
+                    yield sse_event("tool_result",{"name":tool_name, "query": query, "results_count": result_count,},)
+                    logger.info(f"Session {session_id}: iter={tool_iter} '{query}' → {result_count} results")
                 
+                    tool_history.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": tool_content
+                        }
+                    )
+                    continue
+
+                if tool_name == "calculate":
+                    
+                    expression = str(args.get('expression', ""))
+                    # need the calculation to pop up on UI
+                    yield sse_event("tool_use",{'name':tool_name, 'expression':expression, 'iter': tool_iter})
+
+                    
+                    result = await execute_calculator_tool(args)
+                    tool_content = (
+                                    f"Result: {result['result']}" if result["ok"]
+                                    else f"Error: {result['error']}"
+                                )
+                    # True even if failed.
+                    did_calculate = True
+                        
+                    yield sse_event("tool_result",{'name':tool_name, **result})
+                    tool_history.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id":tc_id,
+                            "content": tool_content
+                        }
+                    )
+                    continue
+                        
         else:
             # max loop reached without break
             tool_history.append({
                 "role": "system",
-                "content": "Maximum searches done, used all tool iterations. Now answer with gathered information."
+                "content": "Maximum tool iterations. Now answer with gathered information."
             })
         messages.extend(tool_history)  # add tool context to final messages
         
         #Grounding prompt telling model how to use search results
-        has_prior_search = any(
+        has_prior_search_context = any(
             m.get("role") == "system" and (m.get("content") or "").startswith(TOOL_CONTEXT_MARKER)
             for m in messages
             )
-        if did_search or has_prior_search:
+        if did_search or has_prior_search_context:
             messages.insert(1, {"role": "system", "content": SEARCH_GROUNDING_PROMPT})
-
+        if did_calculate:
+            messages.insert(1, {"role": "system", "content": CALCULATE_GROUNDING_PROMPT})
 
         max_tokens = compute_max_tokens(messages)
         prompt_tokens = count_tokens(messages)
-        logger.info(f"Session {session_id}: prompt_tokens={prompt_tokens}, max_tokens={max_tokens}, did_search={did_search})")
+        logger.info(f"Session {session_id}: prompt_tokens={prompt_tokens}, max_tokens={max_tokens}, did_search={did_search}, did_calculate={did_calculate})")
         
         # Final streaming call no tools 
         vllm_payload = {
