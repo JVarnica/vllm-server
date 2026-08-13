@@ -38,8 +38,8 @@ services:
     command: >
       vllm serve ${VLLM_MODEL}
       --dtype auto
-      --max-model-len 32000
-      --gpu-memory-utilization 0.9
+      --max-model-len 8192
+      --gpu-memory-utilization 0.85
       --host 0.0.0.0
       --port 8000
       --reasoning-parser qwen3 
@@ -89,6 +89,207 @@ services:
     networks:
       - internal
 
+# Langfuse containers
+# ===========================================
+# Langfuse - Postgres (config, users, prompts)
+# ===========================================
+
+  langfuse-postgres:
+    image: postgres:17
+    container_name: langfuse-postgres
+    environment:
+      POSTGRES_USER: ${LF_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${LF_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${LF_POSTGRES_DB}
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - langfuse-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse -d langfuse"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - internal
+
+# ===========================================
+# Langfuse - ClickHouse (traces, observations)
+# ===========================================
+  langfuse-clickhouse:
+    image: clickhouse/clickhouse-server
+    container_name: langfuse-clickhouse
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: ${LF_CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${LF_CLICKHOUSE_PASSWORD}
+    volumes:
+      - langfuse-clickhouse-data:/var/lib/clickhouse
+      - langfuse-clickhouse-logs:/var/log/clickhouse-server
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    # Uncomment if ClickHouse starts crowding vLLM out of system RAM.
+    # mem_limit: 4g
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - internal
+
+# ===========================================
+# Langfuse - MinIO (S3-compatible blob store)
+# ===========================================
+  langfuse-minio:
+    image: minio/minio
+    container_name: langfuse-minio
+    entrypoint: sh
+    # pre-create the bucket so langfuse-worker doesn't fail its first write
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: ${LF_MINIO_USER}
+      MINIO_ROOT_PASSWORD: ${LF_MINIO_PASSWORD}
+    ports:
+      # 9090 is Prometheus on this host, so MinIO goes to 9190/9191
+      - "9190:9000"
+      - "9191:9001"
+    volumes:
+      - langfuse-minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+    networks:
+      - internal
+
+# ===========================================
+# Langfuse - Redis (BullMQ ingestion queue)
+# Separate from your app redis on purpose: Langfuse requires
+# maxmemory-policy=noeviction and fills db0 with BullMQ keys.
+# ===========================================
+  langfuse-redis:
+    image: redis:7
+    container_name: langfuse-redis
+    command: >
+      --requirepass ${LF_REDIS_AUTH}
+      --maxmemory-policy noeviction
+    volumes:
+      - langfuse-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--pass", "${LF_REDIS_AUTH}", "ping"]
+      interval: 3s
+      timeout: 10s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - internal
+ 
+# ===========================================
+# Langfuse - Worker (ingestion, evals, exports)
+# ===========================================
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    container_name: langfuse-worker
+    depends_on: &langfuse-depends-on
+      langfuse-postgres:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-minio:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+    environment: &langfuse-env
+      NEXTAUTH_URL: http://${HOST_IP}:3001
+      DATABASE_URL: postgresql://${LF_POSTGRES_USER}:${LF_POSTGRES_PASSWORD}@langfuse-postgres:5432/${LF_POSTGRES_DB}
+      SALT: ${LF_SALT}
+      ENCRYPTION_KEY: ${LF_ENCRYPTION_KEY}
+      TELEMETRY_ENABLED: "false"
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
+ 
+      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+      CLICKHOUSE_USER: ${LF_CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${LF_CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+ 
+      REDIS_HOST: langfuse-redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: ${LF_REDIS_AUTH}
+      REDIS_TLS_ENABLED: "false"
+ 
+      # Internal endpoint — container-to-container
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${LF_MINIO_USER}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LF_MINIO_PASSWORD}
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+ 
+      # Media endpoint — presigned URLs are opened by YOUR BROWSER,
+      # so this must be the host address, not the container name.
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://${HOST_IP}:9190
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${LF_MINIO_USER}
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LF_MINIO_PASSWORD}
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+ 
+      LANGFUSE_S3_BATCH_EXPORT_ENABLED: "false"
+    restart: unless-stopped
+    networks:
+      - internal
+ 
+# ===========================================
+# Langfuse - Web UI + ingestion API
+# ===========================================
+  langfuse-web:
+    image: langfuse/langfuse:3
+    container_name: langfuse-web
+    depends_on: *langfuse-depends-on
+    ports:
+      # 3000 is Grafana on this host
+      - "3001:3000"
+    environment:
+      <<: *langfuse-env
+      NEXTAUTH_SECRET: ${LF_NEXTAUTH_SECRET}
+      # Optional headless bootstrap — creates org/project/user on first boot
+      # so you never have to click through the signup screen. Leave the
+      # keys as-is and they become the credentials your services use.
+      LANGFUSE_INIT_ORG_ID: ${LF_INIT_ORG_ID:-}
+      LANGFUSE_INIT_ORG_NAME: ${LF_INIT_ORG_NAME:-}
+      LANGFUSE_INIT_PROJECT_ID: ${LF_INIT_PROJECT_ID:-}
+      LANGFUSE_INIT_PROJECT_NAME: ${LF_INIT_PROJECT_NAME:-}
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_INIT_USER_EMAIL: ${LF_INIT_USER_EMAIL:-}
+      LANGFUSE_INIT_USER_NAME: ${LF_INIT_USER_NAME:-}
+      LANGFUSE_INIT_USER_PASSWORD: ${LF_INIT_USER_PASSWORD:-}
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/public/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - internal
+ 
+
+
+
 # ===========================================
 # DeepResearch
 # ===========================================
@@ -97,8 +298,8 @@ services:
       context: ./research-agent
       dockerfile: Dockerfile
     container_name: research-agent
-    ports:
-      - "8001:8001"
+    expose:
+      - "8001"
     env_file:
       - .env
     environment:
@@ -272,6 +473,12 @@ volumes:
   auth-data:
   qdrant_data:
   gateway_data:
+  langfuse-postgres-data:
+  langfuse-clickhouse-data:
+  langfuse-clickhouse-logs:
+  langfuse-minio-data:
+  langfuse-redis-data:
+
 
 networks:
   internal:
