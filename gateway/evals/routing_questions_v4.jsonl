@@ -1,0 +1,62 @@
+{"id": "cur-01", "stratum": "clearly_current", "q": "What were the Champions League quarter-final results?", "min_search": 1, "min_calc": 0}
+{"id": "cur-02", "stratum": "clearly_current", "q": "What's the weather in Newbury tomorrow?", "min_search": 1, "min_calc": 0}
+{"id": "cur-03", "stratum": "clearly_current", "q": "How much is Nvidia stock trading at right now?", "min_search": 1, "min_calc": 0}
+{"id": "cur-04", "stratum": "clearly_current", "q": "Did anything happen with the Bank of England base rate this month?", "min_search": 1, "min_calc": 0}
+{"id": "cur-05", "stratum": "clearly_current", "q": "What's the latest release of vLLM?", "min_search": 1, "min_calc": 0}
+{"id": "cur-06", "stratum": "clearly_current", "q": "Who won the F1 race last weekend?", "min_search": 1, "min_calc": 0}
+{"id": "cur-07", "stratum": "clearly_current", "q": "What are the reviews saying about the iPhone 17?", "min_search": 1, "min_calc": 0}
+{"id": "cur-08", "stratum": "clearly_current", "q": "Is there a train strike on in the UK at the moment?", "min_search": 1, "min_calc": 0}
+{"id": "gen-01", "stratum": "general_knowledge", "q": "Explain how PagedAttention works.", "min_search": "either", "min_calc": 0}
+{"id": "gen-02", "stratum": "general_knowledge", "q": "What's the difference between a list and a tuple in Python?", "min_search": 0, "min_calc": 0}
+{"id": "gen-03", "stratum": "general_knowledge", "q": "Why does quantisation reduce model memory usage?", "min_search": 0, "min_calc": 0}
+{"id": "gen-05", "stratum": "general_knowledge", "q": "Write me a function that reverses a linked list.", "min_search": 0, "min_calc": 0}
+{"id": "gen-06", "stratum": "general_knowledge", "q": "Define what a hash map is.", "min_search": 0, "min_calc": 0}
+{"id": "gen-07", "stratum": "general_knowledge", "q": "Who wrote Crime and Punishment?", "min_search": 0, "min_calc": 0}
+{"id": "gen-08", "stratum": "general_knowledge", "q": "Explain the difference between TCP and UDP.", "min_search": 0, "min_calc": 0}
+{"id": "gen-09", "stratum": "general_knowledge", "q": "What causes a deadlock in concurrent code?", "min_search": 0, "min_calc": 0}
+{"id": "gen-10", "stratum": "general_knowledge", "q": "Summarise the plot of Hamlet.", "min_search": 0, "min_calc": 0}
+{"id": "conv-01", "stratum": "conversational", "q": "Thanks, that explanation was really helpful.", "min_search": 0, "min_calc": 0}
+{"id": "conv-02", "stratum": "conversational", "q": "Hey, how's it going?", "min_search": 0, "min_calc": 0}
+{"id": "conv-03", "stratum": "conversational", "q": "Can you say that again but shorter?", "min_search": 0, "min_calc": 0}
+{"id": "conv-04", "stratum": "conversational", "q": "Never mind, forget I asked.", "min_search": 0, "min_calc": 0}
+{"id": "conv-05", "stratum": "conversational", "q": "What do you think, is that a good approach?", "min_search": 0, "min_calc": 0}
+{"id": "conv-06", "stratum": "conversational", "q": "ok", "min_search": 0, "min_calc": 0}
+{"id": "multi-01", "stratum": "multi_entity", "q": "Compare the iPhone 17 and the Samsung S26.", "min_search": 1, "min_calc": 0, "entities": ["iPhone 17", "Samsung"]}
+{"id": "multi-02", "stratum": "multi_entity", "q": "Which is cheaper right now, an RTX 5070 Ti or an RX 9070 XT?", "min_search": 1, "min_calc": 0, "entities": ["5070", "9070"]}
+{"id": "multi-03", "stratum": "multi_entity", "q": "How did both Arsenal and Liverpool get on this weekend?", "min_search": 1, "min_calc": 0, "entities": ["Arsenal", "Liverpool"]}
+{"id": "multi-04", "stratum": "multi_entity", "q": "What are the latest funding rounds for Mistral and Cohere?", "min_search": 1, "min_calc": 0, "entities": ["Mistral", "Cohere"]}
+{"id": "multi-05", "stratum": "multi_entity", "q": "Compare current UK and German inflation rates.", "min_search": 1, "min_calc": 0, "entities": ["UK", "German"]}
+{"id": "amb-01", "stratum": "temporally_ambiguous", "q": "Who is the CEO of Intel?", "min_search": 1, "min_calc": 0}
+{"id": "amb-02", "stratum": "temporally_ambiguous", "q": "Is Langfuse still open source?", "min_search": 1, "min_calc": 0}
+{"id": "amb-03", "stratum": "temporally_ambiguous", "q": "What's the best open-weights coding model?", "min_search": 1, "min_calc": 0}
+{"id": "amb-04", "stratum": "temporally_ambiguous", "q": "Does Qwen3 support tool calling?", "min_search": 1, "min_calc": 0}
+{"id": "amb-05", "stratum": "temporally_ambiguous", "q": "How many employees does Anthropic have?", "min_search": 1, "min_calc": 0}
+{"id": "amb-06", "stratum": "temporally_ambiguous", "q": "Who was the first person to walk on the moon?", "min_search": "either", "min_calc": 0}
+{"id": "amb-07", "stratum": "temporally_ambiguous", "q": "When did the Berlin Wall come down?", "min_search": "either", "min_calc": 0}
+{"id": "adv-01", "stratum": "adversarial", "q": "Search your memory and tell me what a transformer is.", "min_search": 0, "min_calc": 0}
+{"id": "adv-02", "stratum": "adversarial", "q": "I just read the news. Anyway, explain gradient descent to me.", "min_search": 0, "min_calc": 0}
+{"id": "adv-03", "stratum": "adversarial", "q": "Don't just guess \u2014 what version of CUDA does the latest PyTorch need?", "min_search": 1, "min_calc": 0}
+{"id": "adv-04", "stratum": "adversarial", "q": "What's today's date?", "min_search": 0, "min_calc": 0}
+{"id": "adv-05", "stratum": "adversarial", "q": "Explain what web search is and how search engines index pages.", "min_search": 0, "min_calc": 0}
+{"id": "calc-01", "stratum": "calc_basic", "min_search": 0, "min_calc": 1, "expected_value": 734.4, "q": "What is 17% of 4,320?"}
+{"id": "calc-02", "stratum": "calc_basic", "min_search": 0, "min_calc": 1, "expected_value": 541171, "q": "What's 1,847 multiplied by 293?"}
+{"id": "calc-03", "stratum": "calc_basic", "min_search": 0, "min_calc": 1, "expected_value": 136, "q": "What is the square root of 18,496?"}
+{"id": "calc-04", "stratum": "calc_basic", "min_search": 0, "min_calc": 1, "expected_value": 16777216, "q": "What is 2 to the power of 24?"}
+{"id": "calc-05", "stratum": "calc_basic", "min_search": 0, "min_calc": 1, "expected_value": 2296.86, "q": "Divide 98,765 by 43 and round to two decimal places."}
+{"id": "calc-06", "stratum": "calc_basic", "min_search": 0, "min_calc": 1, "expected_value": 1814400, "q": "How many seconds are there in three weeks?"}
+{"id": "calc-07", "stratum": "calc_basic", "min_search": 0, "min_calc": 1, "expected_value": 3.4012, "q": "What is the natural log of 30?"}
+{"id": "calcw-01", "stratum": "calc_word", "min_search": 0, "min_calc": 1, "expected_value": 29.759, "q": "I drove 247 miles on 8.3 gallons of petrol. What was my miles per gallon?"}
+{"id": "calcw-02", "stratum": "calc_word", "min_search": 0, "min_calc": 1, "expected_value": 595, "q": "A recipe for 4 servings needs 340g of flour. How much flour for 7 servings?"}
+{"id": "calcw-03", "stratum": "calc_word", "min_search": 0, "min_calc": 1, "expected_value": 26.7857, "q": "Split a bill of \u00a3187.50 evenly between 7 people."}
+{"id": "calcw-04", "stratum": "calc_word", "min_search": 0, "min_calc": 1, "expected_value": 212.4915, "q": "A jacket costs \u00a3249.99 with 15% off. What's the final price?"}
+{"id": "calcw-05", "stratum": "calc_word", "min_search": 0, "min_calc": 1, "expected_value": 6579.66, "q": "\u00a35,000 invested at 4% compounded annually for 7 years \u2014 what's the final balance?"}
+{"id": "calct-01", "stratum": "calc_trap_units", "min_search": 0, "min_calc": 1, "expected_value": 0.5, "q": "What is the sine of 30 degrees?"}
+{"id": "calct-02", "stratum": "calc_trap_units", "min_search": 0, "min_calc": 1, "expected_value": 143.2394, "q": "Convert 2.5 radians into degrees."}
+{"id": "calct-03", "stratum": "calc_trap_units", "min_search": 0, "min_calc": 1, "expected_value": 90, "q": "What is 450 mod 120?"}
+{"id": "calcu-01", "stratum": "calc_unsupported", "min_search": 0, "min_calc": 0, "q": "Solve for x: 3x + 7 = 22"}
+{"id": "calcu-02", "stratum": "calc_unsupported", "min_search": 0, "min_calc": 0, "q": "What's the derivative of x squared?"}
+{"id": "calcu-03", "stratum": "calc_unsupported", "min_search": 0, "min_calc": 0, "q": "Is 91 a prime number?"}
+{"id": "calcu-04", "stratum": "calc_unsupported", "min_search": 0, "min_calc": 0, "q": "Explain what a logarithm actually represents."}
+{"id": "calctr-01", "stratum": "calc_trivial", "min_search": 0, "min_calc": "either", "q": "What's 2 + 2?"}
+{"id": "calctr-02", "stratum": "calc_trivial", "min_search": 0, "min_calc": "either", "q": "What's half of 60?"}
+{"id": "calctr-03", "stratum": "calc_trivial", "min_search": 0, "min_calc": "either", "q": "How many minutes in two hours?"}

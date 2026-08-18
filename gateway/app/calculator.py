@@ -38,7 +38,10 @@ FUNCTIONS = {
     "max": max,
     "sqrt": math.sqrt,
     "log": math.log,
+    "ln": math.log,
     "log10": math.log10,
+    "log2": math.log2,
+    "exp": math.exp,
     "sin": math.sin,
     "cos": math.cos,
     "tan": math.tan,
@@ -51,8 +54,33 @@ FUNCTIONS = {
 
 CONSTANTS = {
     "pi": math.pi,
+    "π": math.pi,
+    "tau": math.tau,
+    "τ": math.tau,
     "e": math.e,
+    "inf": math.inf,
 }
+
+
+def _resolve_function_name(func_node: ast.AST) -> str:
+    """Accept both `sqrt(x)` and `math.sqrt(x)` style calls.
+
+    Models frequently emit `math.log(30)` because that is how the
+    expression is written in Python source, so a bare `math.` prefix
+    is treated as a namespace and stripped rather than rejected.
+    """
+
+    if isinstance(func_node, ast.Name):
+        return func_node.id
+
+    if (
+        isinstance(func_node, ast.Attribute)
+        and isinstance(func_node.value, ast.Name)
+        and func_node.value.id == "math"
+    ):
+        return func_node.attr
+
+    raise CalcError("Only direct function calls are allowed")
 
 
 def _evaluate_node(node: ast.AST) -> int | float:
@@ -67,6 +95,16 @@ def _evaluate_node(node: ast.AST) -> int | float:
             raise CalcError(f"Unknown constant: {node.id}")
 
         return CONSTANTS[node.id]
+
+    if isinstance(node, ast.Attribute):
+        if (
+            isinstance(node.value, ast.Name)
+            and node.value.id == "math"
+            and node.attr in CONSTANTS
+        ):
+            return CONSTANTS[node.attr]
+
+        raise CalcError(f"Unknown constant: {ast.unparse(node)}")
 
     if isinstance(node, ast.UnaryOp):
         operation = UNARY_OPERATORS.get(type(node.op))
@@ -109,13 +147,11 @@ def _evaluate_node(node: ast.AST) -> int | float:
         return result
 
     if isinstance(node, ast.Call):
-        if not isinstance(node.func, ast.Name):
-            raise CalcError("Only direct function calls are allowed")
-
-        function = FUNCTIONS.get(node.func.id)
+        function_name = _resolve_function_name(node.func)
+        function = FUNCTIONS.get(function_name)
 
         if function is None:
-            raise CalcError(f"Unknown function: {node.func.id}")
+            raise CalcError(f"Unknown function: {function_name}")
 
         if node.keywords:
             raise CalcError("Named arguments are not supported")
@@ -125,7 +161,7 @@ def _evaluate_node(node: ast.AST) -> int | float:
         try:
             result = function(*arguments)
         except (TypeError, ValueError, OverflowError) as error:
-            raise CalcError(f"{node.func.id}: {error}") from None
+            raise CalcError(f"{function_name}: {error}") from None
 
         if isinstance(result, bool) or not isinstance(result, (int, float)):
             raise CalcError("Calculation did not return a number")
@@ -185,6 +221,8 @@ CALCULATOR_TOOL = {
             "numerical calculation is required. Supports arithmetic, powers, "
             "percentages written as division by 100, square roots, logarithms, "
             "trigonometry, rounding, minimum and maximum values."
+            "For any numeric computation or math fact, even the ones you know from memory, "
+            "use this tool instead of doing the math yourself."
         ),
         "parameters": {
             "type": "object",

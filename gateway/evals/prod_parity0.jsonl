@@ -1,0 +1,72 @@
+python3 gateway/evals/analyze_routing.py gateway/evals/runs/prod_parity.jsonl
+
+=== prod_parity  (325 calls, 65 items, 5 reps) ===
+overall accuracy: 83.1%    latency: p50 55091ms  p90 100724ms  p99 114233ms
+
+stratum                   acc  over_s  under_s  over_c  under_c     n
+adversarial            100.0%       0        0       0        0    25
+calc_basic             100.0%       0        0       0        0    35
+calc_plus_search         0.0%       0        0       0       10    10
+calc_trap_units         86.7%       0        0       0        2    15
+calc_trivial           100.0%       0        0       0        0    15
+calc_unsupported       100.0%       0        0       0        0    20
+calc_word               96.0%       0        0       0        1    25
+clearly_current        100.0%       0        0       0        0    40
+conversational         100.0%       0        0       0        0    30
+general_knowledge       68.0%      11        0       5        0    50
+multi_entity            48.0%       0       13       0        0    25
+temporally_ambiguous    62.9%       9        4       0        0    35
+
+failing items (fails/reps):
+  gen-04       5/5
+      └  Okay, the user is asking for 17% of 4,320. Let me think about how to approach this.  First, I need to calculate 17% of 4,320. Since percentages can be converted to decimals, 17% is the same as 0.17. 
+  multi-03     5/5
+      └  Okay, the user is asking about how both Arsenal and Liverpool did this weekend. Let me break this down.  First, I need to figure out what "get on" means here. It probably refers to their recent perfo
+  amb-07       5/5
+      └  Okay, the user is asking when the Berlin Wall came down. I need to provide an accurate date. Let me recall what I know. The Berlin Wall was erected in 1961, right? And it fell during the late 1980s. 
+  calcs-01     5/5
+      └  Okay, the user is asking for 15% of the current Nvidia share price. Let me break this down. First, I need the current stock price of Nvidia. Since stock prices can change every second, I should use t
+  calcs-02     5/5
+      └  Okay, the user is asking about the UK base rate increasing by a third from today's level. First, I need to find out what the current UK base rate is. Since the tools available include web_search, I s
+  gen-01       4/5
+      └  Okay, the user is asking me to explain how PagedAttention works. I need to make sure I understand what PagedAttention is. From what I remember, PagedAttention is a technique used in large language mo
+  gen-07       4/5
+      └  Okay, the user is asking who wrote "Crime and Punishment." Let me think. I remember that this is a classic novel, part of the Russian literature canon. The author is a well-known Russian writer. But 
+  multi-01     4/5
+      └  Okay, the user wants to compare the iPhone 17 and Samsung S26. Let me start by checking if these models exist. Wait, the latest iPhone is the iPhone 15, released in 2023, and the latest Samsung Galax
+  amb-06       4/5
+      └  Okay, the user is asking who was the first person to walk on the moon. Let me think. I remember from history that the Apollo 11 mission was the first to land on the moon. NASA's Apollo program, right
+  multi-02     2/5
+      └  Okay, the user is asking which GPU is cheaper right now: the RTX 5070 Ti or the RX 9070 XT. Let me think.  First, I need to check the current prices of these two GPUs. Since the question is about cur
+  amb-04       2/5
+      └  Okay, the user is asking if Qwen3 supports tool calling. Let me think. I know that Qwen3 is a large language model, and the user is referring to the capabilities of the model. The tools available her
+  amb-03       2/5
+      └  Okay, the user is asking about the best open-weights coding model. Let me break this down.  First, I need to understand what they mean by "open-weights." Open-weight models typically refer to machine
+  calct-01     1/5
+      └  Okay, the user is asking for the sine of 30 degrees. Let me think. I remember from trigonometry that sin(30°) is a common angle. Wait, what's the exact value? I think it's 0.5. But wait, should I con
+  calcw-02     1/5
+      └  Okay, let's see. The user is asking how much flour is needed for 7 servings if a recipe for 4 servings uses 340g of flour. Hmm, so I need to figure out the amount per serving first and then multiply 
+  calct-03     1/5
+      └  Okay, the user is asking for 450 mod 120. Let me think about how to approach this.  First, modulus operation finds the remainder after division. So, 450 divided by 120, what's the remainder?  Let me 
+  multi-05     1/5
+      └  Okay, the user wants to compare the current UK and German inflation rates. Let me think about how to approach this.  First, I know that inflation rates are usually measured by the Consumer Price Inde
+  gen-08       1/5
+      └  Okay, the user is asking about the difference between TCP and UDP. Let me recall what I know. TCP is Transmission Control Protocol, and UDP is User Datagram Protocol. Both are transport layer protoco
+  gen-03       1/5
+      └  Okay, the user is asking why quantization reduces model memory usage. Let me think about this. Quantization involves reducing the number of bits used to represent the model's parameters. For example,
+  gen-09       1/5
+      └  Okay, the user is asking about what causes a deadlock in concurrent code. Let me think. Deadlocks happen when two or more processes are waiting for each other to release resources, right? So, the mai
+  multi-04     1/5
+      └  Okay, the user is asking about the latest funding rounds for Mistral and Cohere. Let me see. I need to check the most recent information on their funding activities.  First, I should use the web_sear
+
+calculator arguments: 74/86 evaluable, 59/60 match expected_value
+  BAD  'ln(30)': Unknown function: ln
+  BAD  '2.5 * 180 / π': Unknown constant: π
+  BAD  'math.log(30)': Only direct function calls are allowed
+  BAD  'sin(30)': got -0.98803 want 0.5
+  BAD  '2.5 * 180 / π': Unknown constant: π
+  BAD  'math.log(30)': Only direct function calls are allowed
+  BAD  '2.5 * 180 / π': Unknown constant: π
+  BAD  'ln(30)': Unknown function: ln
+  BAD  'sin(30 degrees)': Invalid mathematical expression
+  BAD  '2.5 * 180 / π': Unknown constant: π

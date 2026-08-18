@@ -117,7 +117,7 @@ async def startup(app: FastAPI) -> None:
     app.state.embedding_model = SentenceTransformer(EMBEDDING_MODEL)
     app.state.qdrant = await _init_qdrant()
 
-    max_concurrent = int(os.environ.get("VLLM_MAX_CONCURRENT", "4"))
+    max_concurrent = int(os.environ.get("VLLM_MAX_CONCURRENT", "16"))
     app.state.vllm_sem = asyncio.Semaphore(max_concurrent)
     app.state.embed_task =asyncio.create_task(embed_worker_loop(app))
 

@@ -1,0 +1,44 @@
+{"id": "cb-01", "stratum": "calc_basic", "question": "What is 17.5% of 2,840?", "expected": {"expected_value": 497}}
+{"id": "cb-02", "stratum": "calc_basic", "question": "Compute sqrt(2025) + 15^2.", "expected": {"expected_value": 270}}
+{"id": "cb-03", "stratum": "calc_basic", "question": "What is (9^4 - 500) / 7? Give the answer to at least 2 decimal places.", "expected": {"expected_value": 865.85714, "expected_values_alt": [865.86]}}
+{"id": "cb-04", "stratum": "calc_basic", "question": "If I invest 1,250 at 7.5% annual compound interest, what is it worth after 3 years?", "expected": {"expected_value": 1552.87109, "expected_values_alt": [1552.87, 1552.88]}}
+{"id": "cw-01", "stratum": "calc_word", "question": "A recipe serves 4 people and uses 340g of flour. How much flour do I need to serve 7 people?", "expected": {"expected_value": 595}}
+{"id": "cw-02", "stratum": "calc_word", "question": "My car travelled 468 km on 36 litres of petrol. What is its fuel economy in km per litre?", "expected": {"expected_value": 13}}
+{"id": "cw-03", "stratum": "calc_word", "question": "Six of us are splitting a £287.40 restaurant bill and we want to add a 12% tip. How much does each person pay?", "expected": {"expected_value": 53.648, "expected_values_alt": [53.65], "tolerance": 0.02}}
+{"id": "cw-04", "stratum": "calc_word", "question": "My salary of 42,000 gets a 6% raise, then a 4% cut the following year. What is my final salary?", "expected": {"expected_value": 42739.2, "expected_values_alt": [42739]}}
+{"id": "ct-01", "stratum": "calc_trap_units", "question": "How many seconds are in 2.5 hours?", "expected": {"expected_value": 9000}}
+{"id": "ct-02", "stratum": "calc_trap_units", "question": "A marathon is 42.195 km. How many miles is that? (1 mile = 1.60934 km)", "expected": {"expected_value": 26.2188, "expected_values_alt": [26.22], "tolerance": 0.02}}
+{"id": "ct-03", "stratum": "calc_trap_units", "question": "Convert three quarters of a pound to grams (1 lb = 453.592 g).", "expected": {"expected_value": 340.194, "expected_values_alt": [340.19, 340.2]}}
+{"id": "ch-01", "stratum": "chained", "question": "Search for the official height of Mount Everest in metres, then convert it to feet (1 m = 3.28084 ft).", "expected": {"expected_value": 29031.7, "tolerance": 12, "trajectory": {"requires_search_before_calc": true}}}
+{"id": "ch-02", "stratum": "chained", "question": "Look up the official length of the Great Wall of China in km (the 2012 survey figure) and convert it to miles (1 mile = 1.60934 km).", "expected": {"expected_value": 13170.7, "tolerance": 60, "trajectory": {"requires_search_before_calc": true}}}
+{"id": "ch-03", "stratum": "chained", "question": "Find Usain Bolt's 100m world record time and calculate his average speed in km/h.", "expected": {"expected_value": 37.578, "expected_values_alt": [37.58], "tolerance": 0.06, "trajectory": {"requires_search_before_calc": true}}}
+{"id": "ch-04", "stratum": "chained", "question": "Look up the height of the Burj Khalifa in metres and calculate how many people of height 1.75 m, stacked on top of each other, would match it.", "expected": {"expected_value": 473.143, "expected_values_alt": [473], "tolerance": 1, "trajectory": {"requires_search_before_calc": true}}}
+{"id": "ch-05", "stratum": "chained", "question": "Find the average distance from the Earth to the Moon in km, then calculate how many seconds light takes to travel it (speed of light = 299,792 km/s).", "expected": {"expected_value": 1.282, "tolerance": 0.01, "trajectory": {"requires_search_before_calc": true}}}
+{"id": "ch-06", "stratum": "chained", "question": "Search for how many keys a standard full-size piano has, then calculate the square of that number.", "expected": {"expected_value": 7744, "trajectory": {"requires_search_before_calc": true}}}
+{"id": "me-01", "stratum": "multi_entity", "question": "In what years were the original iPhone and the first Android phone released?", "min_search": "either", "expected": {"expected_substrings": ["2007", "2008"], "entities": [["iPhone"], ["HTC Dream", "T-Mobile G1", "first Android"]]}}
+{"id": "me-02", "stratum": "multi_entity", "question": "Who are the current CEOs of Microsoft and Google?", "min_search": 1, "expected": {"entities": [["Microsoft"], ["Google", "Alphabet"]], "needs_judge": true}}
+{"id": "me-03", "stratum": "multi_entity", "question": "What are the capital cities of Australia and New Zealand?", "min_search": "either", "expected": {"expected_substrings": [["Canberra"], ["Wellington"]], "entities": [["Australia"], ["New Zealand"]]}}
+{"id": "me-04", "stratum": "multi_entity", "question": "Which country has the larger population, Japan or Germany?", "min_search": 1, "expected": {"expected_substrings": [["Japan"]], "entities": [["Japan"], ["Germany"]]}}
+{"id": "me-05", "stratum": "multi_entity", "question": "Which is taller, the Eiffel Tower or the Empire State Building?", "expected": {"expected_substrings": [["Empire State"]], "entities": [["Eiffel"], ["Empire State"]]}}
+{"id": "cc-01", "stratum": "clearly_current", "question": "What is the latest stable version of Python?", "min_search": 1, "expected": {"needs_judge": true}}
+{"id": "cc-02", "stratum": "clearly_current", "question": "Who is the current Prime Minister of the United Kingdom?", "min_search": 1, "expected": {"needs_judge": true}}
+{"id": "cc-03", "stratum": "clearly_current", "question": "What is the most recent iPhone model Apple has released?", "min_search": 1, "expected": {"needs_judge": true}}
+{"id": "cc-04", "stratum": "clearly_current", "question": "What is the price of Bitcoin right now, roughly?", "min_search": 1, "expected": {"needs_judge": true}}
+{"id": "cc-05", "stratum": "clearly_current", "question": "Who won the most recent UEFA Champions League final?", "min_search": 1,"expected": {"needs_judge": true}}
+{"id": "cc-06", "stratum": "clearly_current", "question": "What is the current US Federal Reserve interest rate?", "min_search": 1, "expected": {"needs_judge": true}}
+{"id": "cc-07", "stratum": "clearly_current", "question": "When is Grand Theft Auto 6 going to be released?", "min_search": 1, "expected": {"needs_judge": true}}
+{"id": "ta-01", "stratum": "temporally_ambiguous", "question": "How many people currently live in London 2026?", "min_search": 1, "expected": {"needs_judge": true}}
+{"id": "ta-02", "stratum": "temporally_ambiguous", "question": "What is the tallest building in the world?", "min_search": "either", "expected": {"expected_substrings": [["Burj Khalifa", "Burj"]]}}
+{"id": "ta-03", "stratum": "temporally_ambiguous", "question": "Who owns X (formerly Twitter)?", "min_search": 1, "expected": {"needs_judge": true}}
+{"id": "ta-04", "stratum": "temporally_ambiguous", "question": "How many member states does the European Union have?", "min_search": "either", "expected": {"expected_substrings": ["27"]}}
+{"id": "gf-01", "stratum": "graceful_failure", "question": "What is the GDP of the Republic of Vantoria?", "expected": {"graceful": true}}
+{"id": "gf-02", "stratum": "graceful_failure", "question": "Who won the 2025 Zelmark Prize for Chemistry?", "expected": {"graceful": true}}
+{"id": "gf-03", "stratum": "graceful_failure", "question": "What is the population of Brentwick Falls, Montana?", "expected": {"graceful": true}}
+{"id": "gf-04", "stratum": "graceful_failure", "question": "What is the current stock price of Quorvex Industries (ticker QVXI)?", "expected": {"graceful": true}}
+{"id": "gk-01", "stratum": "general_knowledge", "question": "What is the capital of Japan?", "min_search": 0, "expected": {"expected_substrings": ["Tokyo"]}}
+{"id": "gk-02", "stratum": "general_knowledge", "question": "Who wrote Pride and Prejudice?", "expected": {"expected_substrings": ["Austen"]}}
+{"id": "gk-03", "stratum": "general_knowledge", "question": "In what year did the Second World War end?", "min_search": 0, "expected": {"expected_substrings": ["1945"]}}
+{"id": "gk-04", "stratum": "general_knowledge", "question": "What is the largest planet in the solar system?", "min_search": 0, "expected": {"expected_substrings": ["Jupiter"]}}
+{"id": "gk-05", "stratum": "general_knowledge", "question": "Roughly what is the speed of light in km per second?", "expected": {"expected_value": 299792, "expected_values_alt": [300000], "tolerance": 500}}
+{"id": "cv-01", "stratum": "conversational", "question": "hey, how's it going?", "expected": {}}
+{"id": "cv-02", "stratum": "conversational", "question": "thanks, that's really helpful — that's all I needed for now", "expected": {}}

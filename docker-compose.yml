@@ -345,6 +345,7 @@ services:
       - EMBEDDING_MODEL=${EMBEDDING_MODEL}
     volumes:
       - gateway_data:/data
+      - ./gateway/evals:/app/evals
     depends_on:
       vllm:
         condition: service_healthy

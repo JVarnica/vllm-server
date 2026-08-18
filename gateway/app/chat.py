@@ -29,12 +29,11 @@ EMBEDDING_DIM = 384
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 DEFAULT_PROMPT_TOKENS = 10000
 MIN_GEN_TOKENS = 512
-MAX_CONTEXT_WINDOW = 16384
 
 MARGIN_SAFETY = 128
 # agentic loop 
 MAX_TOOL_ITER = 3
-TCALL_MAX_RESULTS = 5 
+TCALL_MAX_RESULTS = 8
 TOOL_OUTPUT_MAX_CHARS = int(os.environ.get("TOOL_OUTPUT_MAX_CHARS", "12000"))
 
 TOOL_CONTEXT_MARKER = "Prior turn tool results:"
@@ -54,10 +53,12 @@ Available capabilities:
     - calculate: exact arithmetic and mathematical expressions.
 
 Tool Rules:
-1. Use web_search when facts may have changed, are recent, or need verification.
-2. Use calculate for ANY arithmetic beyond single-digit sums. Never do multi-digit arithmetic yourself.
+1. Use web_search when facts may have changed, are recent, or need verification. 
+2. Do not use web_search to verify historical facts, and general knowledge that you already know. Your training data is sufficient for that.
+2. Use calculate for ANY arithmetic beyond single-digit sums. Always use calculate for complex arithmetic, large numbers, math facts or when precision is required.
 3. Do not call tools when a direct answer is sufficient.
-4. Treat tool results as information available in the current conversation.
+4. For questions about software versions, model capabilities, product features, or 'best X' rankings, always search — your training data is stale for these",
+5. Treat tool results as information available in the current conversation.
 """
 
 WEB_SEARCH_TOOL = {
@@ -200,7 +201,8 @@ async def chat(request: Request):
                 tags=["chat"],
                 metadata={"model": model, "enable_rag": enable_rag},
             )
-
+            #yield the trace to id so can track trace
+            yield sse_event("trace", {"trace_id": langfuse.get_current_trace_id()})
             #  1: Decide tool usage
             probe_msgs, messages = build_context_messages(session, message, rag_context=rag_context)
 
@@ -214,10 +216,9 @@ async def chat(request: Request):
 
                 probe_payload = {
                     "model": model,
-                    "messages": probe_msgs + tool_history,
+                    "messages": probe_msgs + tool_history[-1],
                     "tools": TOOLS,
                     "tool_choice": "auto",
-                    "parallel_tool_calls": False,
                     "temperature": 0.1,
                     "max_tokens": 2000,
                     "stream": False,

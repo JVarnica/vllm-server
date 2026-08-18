@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PROMPT_TOKENS = 10000
 MIN_GEN_TOKENS = 512
-MAX_CONTEXT_WINDOW = 16384
+MAX_CONTEXT_WINDOW = 8192
 MARGIN_SAFETY = 128
 
 
@@ -78,8 +78,9 @@ def parse_sse_stream(line: str) -> tuple[str, bool, str, dict]:
     c0 = choices[0] or {}
     delta = c0.get("delta") or {}
     content = delta.get("content") or ""
+    reasoning_content = delta.get("reasoning_content") or ""
     
     finish = c0.get("finish_reason") or ""
     done = finish in ("stop", "length") 
     usage =obj.get("usage")
-    return (content, done, finish, usage)
+    return (content, reasoning_content ,done, finish, usage)
