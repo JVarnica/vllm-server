@@ -113,6 +113,16 @@ async def ask(client, base_url, question, arm, rep, qid):
                     args = ({"expression": obj.get("expression") or obj.get("query")}
                             if tool == "calculate" else {"query": obj.get("query")})
                     turn["tool_calls"].append({"tool": tool, "args": args})
+                if event_name == "tool_result": # just for search needed 
+                    it = obj.get("iter", 0)
+                    turn = turns.setdefault(it, {"tool_calls": [], "tool_results": []})
+                    tool_name = obj.get("tool") or ("calculate" if "expression" in obj else "web_search")
+                    query = obj.get("query") 
+                    result_count = obj.get("results_count")
+                    tool_content = obj.get("content")
+                    metadata = obj.get("metadata")  or [] # optional, only for web_search with results
+                    turn["tool_results"].append({"tool": tool_name, "query": query, "results_count": result_count, "content": tool_content, "metadata": metadata})
+
                 elif event_name in ("", "message"):
                     choices = obj.get("choices") or []
                     if choices:
@@ -128,9 +138,16 @@ async def ask(client, base_url, question, arm, rep, qid):
     if not error and not answer:
         error = "empty final answer"
     ordered = [turns[k] for k in sorted(turns)]
+    all_results = [tr for t in ordered for tr in t["tool_results"]]
+    # Flat, ordered grounding for the judge: one block per call, labelled with
+    # the query so a multi-search answer can be traced back per entity.
+    blocks = [f"### {tr['query']}\n{tr['content']}" for tr in all_results if tr["content"]]
+    tool_content = "\n\n".join(blocks)
+
     return {
         "answer": answer,
         "turns": ordered,
+        "tool_content": tool_content,
         "n_iterations": len(ordered),
         "n_tool_calls": sum(len(t["tool_calls"]) for t in ordered),
         "usage": usage,
@@ -161,7 +178,7 @@ async def main():
     print(f"{len(items)} items x {args.repeats} reps = {len(items) * args.repeats} calls")
 
     sem = asyncio.Semaphore(args.concurrency)
-    out_path = Path(args.out) / f"answer_{args.arm}.jsonl"
+    out_path = Path(args.out) / f"answer_determ_{args.arm}.jsonl"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     async def one(client, item, rep):
@@ -187,7 +204,16 @@ async def main():
         return {
             "id": item["id"], "stratum": item["stratum"], "question": item["question"],
             "rep": rep, "run": args.arm, "model": None,
-            "expected": item.get("expected") or {}, **r,
+            # Preserve both the new evaluation schema and the legacy
+            # `expected` object during migration. The deterministic scorer and
+            # semantic judge need these fields in the immutable run record;
+            # they must not depend on re-reading a question file that may later
+            # change.
+            "expected_behavior": item.get("expected_behavior"),
+            "tool_policy": item.get("tool_policy") or {},
+            "oracle": item.get("oracle") or {},
+            "judge": item.get("judge") or {},
+            **r,
         }
 
     async def get_headers():

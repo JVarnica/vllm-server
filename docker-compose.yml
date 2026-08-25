@@ -77,12 +77,14 @@ services:
     container_name: searxng
     
     expose:
-      - "8080"
+      - "8070"
     
     volumes:
       - ./searxng:/etc/searxng
     
     environment:
+      - SEARXNG_PORT=8070
+      - SEARXNG_BIND_ADDRESS=0.0.0.0
       - SEARXNG_QUERY_URL=${SEARXNG_EXTERNAL_URL}
     
     restart: unless-stopped
@@ -343,6 +345,7 @@ services:
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - ALGORITHM=${ALGORITHM}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL}
+      - TRACES_DATASET=1
     volumes:
       - gateway_data:/data
       - ./gateway/evals:/app/evals

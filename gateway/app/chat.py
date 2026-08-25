@@ -14,7 +14,7 @@ import asyncio
 
 from app.session import get_session_context, append_pair, append_context
 from app.rag import retrieve_rag_context
-from app.context import search_and_scrape, format_search_context
+from app.context3 import search_and_scrape, format_search_context
 from app.calculator import CALCULATOR_TOOL, execute_calculator_tool
 from app.chat_helper_funcs import count_tokens, compute_max_tokens, parse_sse_stream
 
@@ -79,8 +79,23 @@ WEB_SEARCH_TOOL = {
                     "type": "string",
                     "description": "Concise search query. Avoid full sentences.",
                 },
+                "time_sensitivity": {
+                    "type": "string",
+                    "enum": ["breaking","recent", "general"],
+                    "description": (
+                        "Indicates how time-sensitive the information is. "
+                        "'breaking' for events that change over hours and days (news, sports scores, stock prices, weather), "
+                        "'recent' for events which change over week and months (software versions, release dates, annual reports) , "
+                        "'general' for old events which are unlikely to change (historical facts, biographies, general knowledge)."
+                        "Queries with no time words can still be 'recent',such as 'When does GTA 6 come out'."
+                        "If you are unsure, default to 'stale'."
+                    ),
+                    "default": "stale",
+                },
                 "max_results": {
                     "type": "integer",
+                    "minimum": 1,
+                    "maximum": TCALL_MAX_RESULTS,
                     "description": f"Number of results to fetch (default {TCALL_MAX_RESULTS}).",
                     "default": TCALL_MAX_RESULTS,
                 },
@@ -216,7 +231,7 @@ async def chat(request: Request):
 
                 probe_payload = {
                     "model": model,
-                    "messages": probe_msgs + tool_history[-1],
+                    "messages": probe_msgs + tool_history,
                     "tools": TOOLS,
                     "tool_choice": "auto",
                     "temperature": 0.1,
@@ -227,7 +242,7 @@ async def chat(request: Request):
                 with langfuse.start_as_current_generation(
                     name="routing-probe",
                     model=model,
-                    input=probe_msgs + tool_history,
+                    input=probe_msgs,
                     model_parameters={
                         "temperature": 0.1,
                         "max_tokens": 2000,
@@ -245,12 +260,14 @@ async def chat(request: Request):
 
                     msg = probe_data["choices"][0]["message"]
                     tool_calls = msg.get("tool_calls") or []
+                    probe_reasoning = msg.get("reasoning_content") or ""
 
                     probe_usage = probe_data.get("usage") or {}
                     probe_gen.update(
                         output={
                             "tool_calls": tool_calls,
                             "content": msg.get("content") or "",
+                            "reasoning_content": probe_reasoning,
                         },
                         usage_details={
                             "input": probe_usage.get("prompt_tokens"),
@@ -265,6 +282,8 @@ async def chat(request: Request):
                             ],
                         },
                     )
+                if probe_reasoning:
+                    yield sse_event("probe_reasoning", {"iter": tool_iter, "reasoning": probe_reasoning})
 
                 if not tool_calls:
                     break  # no tool calls, proceed to final response
@@ -299,6 +318,7 @@ async def chat(request: Request):
                     if tool_name == "web_search":
                         query = str(args.get("query", message))
                         max_results = int(args.get("max_results", TCALL_MAX_RESULTS))
+                        time_sensitivity = args.get("time_sensitivity")
                         # for UI so knows that its searching
                         yield sse_event("tool_use", {"name": tool_name, "iter": tool_iter, "query": query})
 
@@ -309,7 +329,22 @@ async def chat(request: Request):
                             try:
                                 search_results = await search_and_scrape(request, query, max_results=max_results)
                                 # tool content given to model
-                                tool_content = format_search_context(search_results)
+                                tool_content = format_search_context(search_results, top_n=4, per_result_chars=2500, include_engine_metadata=False)
+
+                                model_search_results = sorted(search_results, key=lambda r: r.get("retrieval_score", 0), reverse=True)[:4]
+                                # What evaluation / logging sees
+                                search_metadata = [
+                                    {
+                                        "title": r.get("title"),
+                                        "url": r.get("url"),
+                                        "engine": r.get("engine"),
+                                        "engines": r.get("engines"),
+                                        "searx_score": r.get("searx_score"),
+                                        "retrieval_score": r.get("retrieval_score"),
+                                        "original_rank": r.get("original_rank"),
+                                    }
+                                    for r in model_search_results
+                                ]
                                 tool_accum.extend(search_results)  # for context not this req
                                 result_count = len(search_results)
                                 did_search = True
@@ -317,6 +352,7 @@ async def chat(request: Request):
                                     output={
                                         "results_count": result_count,
                                         "urls": [r.get("url") for r in search_results][:10],
+                                        "content": search_results,
                                     },
                                 )
                             except Exception as e:
@@ -328,8 +364,11 @@ async def chat(request: Request):
                                     level="ERROR",
                                     status_message=str(e),
                                 )
+                        result_event ={"name": tool_name, "query": query, "results_count": result_count, 'content': tool_content, "iter": tool_iter}
+                        if tool_name == "web_search" and result_count > 0:
+                            result_event['metadata'] = search_metadata
 
-                        yield sse_event("tool_result", {"name": tool_name, "query": query, "results_count": result_count})
+                        yield sse_event("tool_result", result_event)
                         logger.info(f"Session {session_id}: iter={tool_iter} '{query}' -> {result_count} results")
 
                         tool_history.append(
@@ -414,7 +453,7 @@ async def chat(request: Request):
                 "stream_options": {"include_usage": True}
             }
             assistant_accum: list[str] = []
-            # reasoning_accum: list[str] = []
+            reasoning_accum: list[str] = []
 
             # defined up-front so the finally block can never raise NameError
             usage = None
@@ -441,9 +480,11 @@ async def chat(request: Request):
                             if not line:
                                 continue
                             if line.startswith("data:") and not done_seen:
-                                delta, done, finish, usage = parse_sse_stream(line)
+                                delta, reasoning_delta, done, finish, usage = parse_sse_stream(line)
                                 if delta:
                                     assistant_accum.append(delta)
+                                if reasoning_delta:
+                                    reasoning_accum.append(reasoning_delta)
                                 if usage:
                                     logger.info(f"Session {session_id}: vllm_usage={usage}")
                                 if done:
@@ -453,6 +494,7 @@ async def chat(request: Request):
 
             finally:
                 final_accum = "".join(assistant_accum).strip()
+                final_reasoning = "".join(reasoning_accum).strip()
 
                 # close the generation first: a client disconnect mid-stream still
                 # records whatever was produced rather than dropping the span
@@ -462,7 +504,7 @@ async def chat(request: Request):
                         "input": usage.get("prompt_tokens"),
                         "output": usage.get("completion_tokens"),
                     } if usage else None,
-                    metadata={"finish_reason": finish, "truncated": not done_seen},
+                    metadata={"finish_reason": finish, "truncated": not done_seen, "reasoning_content": final_reasoning or None},
                 )
                 gen.end()
                 root.update_trace(output=final_accum)
@@ -471,7 +513,7 @@ async def chat(request: Request):
                     clean = re.sub(r"\n{3,}", "\n\n", final_accum).strip()
 
                     # tool_context to append to redis set, so previous turn availiable. no list as no point taking more just last one
-                    tool_context = format_search_context(tool_accum, max_chars=None, top_n=2, per_result_chars=1000, header="") if tool_accum else ""  # do the header in build_messaqges
+                    tool_context = format_search_context(tool_accum, max_chars=4000, top_n=2, per_result_chars=1800, header="", include_engine_metadata=False) if tool_accum else ""  # do the header in build_messaqges
 
                     tool_tokens = count_tokens([{"role": "system", "content": tool_context}]) if tool_context else 0
                     clean_tokens = count_tokens([{"role": "assistant", "content": clean}])
@@ -486,8 +528,5 @@ async def chat(request: Request):
 
     return StreamingResponse(stream_agent(), media_type="text/event-stream")
            
-
-
-
  
  

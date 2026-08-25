@@ -1,4 +1,4 @@
-use_default_settings: true
+use_default_settings: true 
 
 server:
   secret_key: "b0b17906390d3ac58b9336a0cfbf43bee0d04462b7be6d3918fe2a78198ab974"
@@ -6,73 +6,68 @@ server:
 
 search:
   safe_search: 0
-  autocomplete: "google"
 
   formats:
     - html
     - json
 
 outgoing:
-  requests_timeout: 5.0
-  max_request_timeout: 10.0
+  requests_timeout: 6.0
+  max_request_timeout: 15.0
 
-  
 engines:
-  - name: google
-    engine: google
-    shortcut: g
-    disabled: true
-
-  - name: duckduckgo
-    engine: duckduckgo
-    shortcut: ddg
-    disabled: true
-
-  - name: brave
-    engine: brave
-    shortcut: b
-    disabled: true
-
+  # general web — enable
   - name: bing
-    engine: bing
-    shortcut: bi
+    disabled: false
+    language: en-GB
+  - name: mojeek
+    disabled: false
+  - name: mwmbl
+    disabled: true  # bad results 
+  - name: stract
+    disabled: false
+  - name: right dao
+    disabled: false
+  - name: yep
     disabled: false
 
-  - name: wikipedia
-    engine: wikipedia
-    shortcut: wp
-    disabled: false
-
-  - name: arxiv
-    engine: arxiv
-    shortcut: ax
-    timeout: 10.0
-    disabled: false
-
-  - name: semantic_scholar
-    engine: semantic_scholar
-    shortcut: ss
-    disabled: true
-  
-  - name: pubmed
-    engine: pubmed
-    shortcut: pm
-    disabled: false
-
+  # science
   - name: crossref
-    engine: crossref
-    shortcut: cr
     disabled: false
+  - name: openalex
+    disabled: false
+  - name: arxiv
+    timeout: 10.0
 
-  - name: github
-    engine: github
-    shortcut: gh
-    disabled: false
-  
-  - name: stackoverflow
-    engine: stackexchange
-    shortcut: so
-    disabled: false
+  # the noise sources that caused the original bug
+  - name: wiktionary
+    disabled: true
+  - name: ddg definitions
+    disabled: true
+  - name: dictzone
+    disabled: true
+  - name: etymonline
+    disabled: true
+  - name: wordnik
+    disabled: true
+  - name: duden
+    disabled: true
+  - name: currency
+    disabled: true
+
+  # scrapers that got you banned — off, but available later
+  - name: google
+    disabled: true
+  - name: duckduckgo
+    disabled: true
+  - name: brave
+    disabled: true
+  - name: startpage
+    disabled: true
+
+  # wikidata: init fails on 403 from query.wikidata.org
+  - name: wikidata
+    disabled: true
 
 hostnames:
   remove:
