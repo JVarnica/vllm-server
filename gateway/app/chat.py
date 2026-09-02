@@ -14,7 +14,7 @@ import asyncio
 
 from app.session import get_session_context, append_pair, append_context
 from app.rag import retrieve_rag_context
-from app.context3 import search_and_scrape, format_search_context
+from app.context3 import search_and_scrape, format_search_context, CONTEXT_TOP_N
 from app.calculator import CALCULATOR_TOOL, execute_calculator_tool
 from app.chat_helper_funcs import count_tokens, compute_max_tokens, parse_sse_stream
 
@@ -23,7 +23,6 @@ logger = logging.getLogger("uvicorn.error")
 
 VLLM_URL = os.environ["VLLM_URL"]
 SEARXNG_INTERNAL_URL = os.environ["SEARXNG_INTERNAL_URL"]
-
 
 EMBEDDING_DIM = 384
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
@@ -35,6 +34,7 @@ MARGIN_SAFETY = 128
 MAX_TOOL_ITER = 3
 TCALL_MAX_RESULTS = 8
 TOOL_OUTPUT_MAX_CHARS = int(os.environ.get("TOOL_OUTPUT_MAX_CHARS", "12000"))
+TRACES_DATASET = os.environ["TRACES_DATASET"]
 
 TOOL_CONTEXT_MARKER = "Prior turn tool results:"
 RAG_CONTEXT_MARKER = "User's retrieved information:"
@@ -327,44 +327,88 @@ async def chat(request: Request):
                             input={"query": query, "max_results": max_results},
                         ) as search_span:
                             try:
-                                search_results = await search_and_scrape(request, query, max_results=max_results)
+                                search_results = await search_and_scrape(
+                                    request, 
+                                    query, 
+                                    max_results=max_results,
+                                    question=message,
+                                    time_sensitivity=time_sensitivity)
                                 # tool content given to model
-                                tool_content = format_search_context(search_results, top_n=4, per_result_chars=2500, include_engine_metadata=False)
+                                tool_content = format_search_context(search_results, top_n=CONTEXT_TOP_N, per_result_chars=2500, include_engine_metadata=False)
 
-                                model_search_results = sorted(search_results, key=lambda r: r.get("retrieval_score", 0), reverse=True)[:4]
+                                model_search_results = sorted(
+                                    search_results, 
+                                    key=lambda r: r.get("retrieval_score", 0), 
+                                    reverse=True)[:CONTEXT_TOP_N]
+                                
+                                #Augment models query
+                                effective_query = next(
+                                    (r.get("effective_query") for r in search_results if r.get("effective_query")),
+                                    query,
+                                )
+                                recency_mode = next(
+                                    (r.get("recency_mode") for r in search_results if r.get("recency_mode")),
+                                    "general",
+                                )
                                 # What evaluation / logging sees
-                                search_metadata = [
-                                    {
+                                search_metadata = []
+                                for r in model_search_results:
+                                    row = {
                                         "title": r.get("title"),
                                         "url": r.get("url"),
-                                        "engine": r.get("engine"),
-                                        "engines": r.get("engines"),
-                                        "searx_score": r.get("searx_score"),
-                                        "retrieval_score": r.get("retrieval_score"),
                                         "original_rank": r.get("original_rank"),
+                                        "final_score": r.get("final_score"),
+                                        "scrape_ok": r.get("scrape_ok"),
+                                        "engine": r.get("engine"),
+                                        "evidence_passages": r.get("evidence_passages"),
                                     }
-                                    for r in model_search_results
-                                ]
+                                    if TRACES_DATASET:
+                                        row.update({
+                                            "engines": r.get("engines"),
+                                            "searx_score": r.get("searx_score"),
+                                            "retrieval_score": r.get("retrieval_score"),
+                                            "evidence_score": r.get("evidence_score"),
+                                            "publishedDate": r.get("publishedDate"),
+                                            "resolved_date": r.get("resolved_date"),
+                                            "date_source": r.get("date_source"),
+                                            "recency_component": r.get("recency_component"),
+                                        })
+                                    search_metadata.append(row)
                                 tool_accum.extend(search_results)  # for context not this req
                                 result_count = len(search_results)
                                 did_search = True
                                 search_span.update(
                                     output={
                                         "results_count": result_count,
+                                        "effective_query": effective_query,
+                                        "recency_mode": recency_mode,
                                         "urls": [r.get("url") for r in search_results][:10],
-                                        "content": search_results,
+                                        "content": tool_content,
                                     },
                                 )
                             except Exception as e:
                                 tool_content = f"Error during web search: {str(e)}"
                                 result_count = 0
+                                effective_query = query
+                                recency_mode = "general"
                                 logger.exception(f"search failed for '{query}'")
                                 search_span.update(
                                     output={"results_count": 0, "error": str(e)},
                                     level="ERROR",
                                     status_message=str(e),
                                 )
-                        result_event ={"name": tool_name, "query": query, "results_count": result_count, 'content': tool_content, "iter": tool_iter}
+                                # what is sent to events just need raw for dataset not tool content.
+                        result_event ={
+                            "name": tool_name, 
+                            "query": query, 
+                            "results_count": result_count, 
+                            "raw_content": search_results, 
+                            "iter": tool_iter,
+                            "time_sensitivity": time_sensitivity,
+                            "effective_query": effective_query,
+                            "recency_mode": recency_mode,
+                        }
+                        
                         if tool_name == "web_search" and result_count > 0:
                             result_event['metadata'] = search_metadata
 
