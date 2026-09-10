@@ -1,3 +1,4 @@
 .env
 research-output/*
 !research-output/example.md
+searxng/settings.yml
