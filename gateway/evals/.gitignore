@@ -1,0 +1,10 @@
+__pycache__/
+# All datasets and results except main ones
+*.jsonl
+runs/*
+freez1/
+code-stable-x64-*/
+# want tracked
+!freeze/freeze_setv3.jsonl
+!runs/answer-v2.jsonl
+!questions_searchv1.jsonl

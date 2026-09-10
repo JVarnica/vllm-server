@@ -14,9 +14,9 @@ import asyncio
 
 from app.session import get_session_context, append_pair, append_context
 from app.rag import retrieve_rag_context
-from app.context3 import search_and_scrape, format_search_context, CONTEXT_TOP_N
+from app.context3 import search_and_scrape, format_search_context, CONTEXT_TOP_N, TRACES_DATASET
 from app.calculator import CALCULATOR_TOOL, execute_calculator_tool
-from app.chat_helper_funcs import count_tokens, compute_max_tokens, parse_sse_stream
+from app.chat_helper_funcs import count_tokens, compute_max_tokens, parse_sse_stream, trim_to_window
 
 import logging
 logger = logging.getLogger("uvicorn.error")
@@ -30,11 +30,13 @@ DEFAULT_PROMPT_TOKENS = 10000
 MIN_GEN_TOKENS = 512
 
 MARGIN_SAFETY = 128
+SEARCH_MAX_CONTEXT = 13000 # ~4K TOKS
+MIN_CALL_CHARS = 2000
+MAX_MODEL_LEN = int(os.environ.get("MAX_MODEL_LEN", "8192"))
 # agentic loop 
 MAX_TOOL_ITER = 3
 TCALL_MAX_RESULTS = 8
 TOOL_OUTPUT_MAX_CHARS = int(os.environ.get("TOOL_OUTPUT_MAX_CHARS", "12000"))
-TRACES_DATASET = os.environ["TRACES_DATASET"]
 
 TOOL_CONTEXT_MARKER = "Prior turn tool results:"
 RAG_CONTEXT_MARKER = "User's retrieved information:"
@@ -59,6 +61,7 @@ Tool Rules:
 3. Do not call tools when a direct answer is sufficient.
 4. For questions about software versions, model capabilities, product features, or 'best X' rankings, always search — your training data is stale for these",
 5. Treat tool results as information available in the current conversation.
+6. When a question asks about several distinct entities, issue one web_search per entity rather than a single combined query. One page rarely covers them all.
 """
 
 WEB_SEARCH_TOOL = {
@@ -90,11 +93,11 @@ WEB_SEARCH_TOOL = {
                         "Queries with no time words can still be 'recent',such as 'When does GTA 6 come out'."
                         "If you are unsure, default to 'stale'."
                     ),
-                    "default": "stale",
+                    "default": "recent",
                 },
                 "max_results": {
                     "type": "integer",
-                    "minimum": 1,
+                    "minimum": 3,
                     "maximum": TCALL_MAX_RESULTS,
                     "description": f"Number of results to fetch (default {TCALL_MAX_RESULTS}).",
                     "default": TCALL_MAX_RESULTS,
@@ -226,6 +229,8 @@ async def chat(request: Request):
 
             did_search = False
             did_calculate = False
+            citation_offset = 0
+            search_chars_used = 0
 
             for tool_iter in range(MAX_TOOL_ITER):
 
@@ -293,6 +298,26 @@ async def chat(request: Request):
                     "content": msg.get("content") or "",
                     "tool_calls": tool_calls,
                 })
+                n_searches = sum(
+                    1 for c in tool_calls
+                    if (c.get("function") or {}).get("name") == "web_search"
+                )
+                remaining_chars = max(0, SEARCH_MAX_CONTEXT - search_chars_used)
+ 
+                # Shallower per result when entities share the budget: one fact
+                # per entity is wanted, and result 4 was never going to carry it.
+                call_result_chars = 2500 if n_searches <= 1 else 1250
+                call_top_n = CONTEXT_TOP_N if (tool_iter == 0 and n_searches <= 1) else 3
+                want = n_searches * call_top_n * call_result_chars
+                iter_budget = (
+                    remaining_chars if tool_iter == MAX_TOOL_ITER - 1
+                    else min(want, remaining_chars)
+                )
+                per_call_chars = max(MIN_CALL_CHARS, iter_budget // max(1, n_searches))
+                # max_chars and top_n * per_result_chars must agree, or results
+                # get cut mid-block and per_result_chars does nothing.
+                call_top_n = max(1, min(call_top_n, per_call_chars // call_result_chars))
+
 
                 # execute all tool calls sequentially.
                 for tc in tool_calls:
@@ -327,29 +352,41 @@ async def chat(request: Request):
                             input={"query": query, "max_results": max_results},
                         ) as search_span:
                             try:
+                                # gives passages scraped and ranked.
                                 search_results = await search_and_scrape(
                                     request, 
                                     query, 
                                     max_results=max_results,
                                     question=message,
                                     time_sensitivity=time_sensitivity)
-                                # tool content given to model
-                                tool_content = format_search_context(search_results, top_n=CONTEXT_TOP_N, per_result_chars=2500, include_engine_metadata=False)
 
-                                model_search_results = sorted(
-                                    search_results, 
-                                    key=lambda r: r.get("retrieval_score", 0), 
-                                    reverse=True)[:CONTEXT_TOP_N]
-                                
                                 #Augment models query
                                 effective_query = next(
                                     (r.get("effective_query") for r in search_results if r.get("effective_query")),
                                     query,
                                 )
+                                
+                                model_search_results = sorted(
+                                    search_results, 
+                                    key=lambda r: r.get("retrieval_score", 0), 
+                                    reverse=True)[:CONTEXT_TOP_N]
+                                
                                 recency_mode = next(
                                     (r.get("recency_mode") for r in search_results if r.get("recency_mode")),
                                     "general",
                                 )
+                                tool_content = format_search_context(
+                                    model_search_results,
+                                    max_chars=per_call_chars,
+                                    top_n=call_top_n,
+                                    per_result_chars=call_result_chars,
+                                    include_engine_metadata=False,
+                                    header=f"[Web search results for: {effective_query}]",
+                                    start_index=citation_offset + 1,
+                                )
+                                search_chars_used += len(tool_content)
+                                citation_offset += len(re.findall(r"^\[\d+\]", tool_content, re.M))
+                                
                                 # What evaluation / logging sees
                                 search_metadata = []
                                 for r in model_search_results:
@@ -402,7 +439,7 @@ async def chat(request: Request):
                             "name": tool_name, 
                             "query": query, 
                             "results_count": result_count, 
-                            "raw_content": search_results, 
+                            "tool_content": tool_content, 
                             "iter": tool_iter,
                             "time_sensitivity": time_sensitivity,
                             "effective_query": effective_query,
@@ -462,6 +499,8 @@ async def chat(request: Request):
                     "role": "system",
                     "content": "Maximum tool iterations. Now answer with gathered information."
                 })
+
+            
             messages.extend(tool_history)  # add tool context to final messages
 
             # Grounding prompt telling model how to use search results
@@ -474,8 +513,13 @@ async def chat(request: Request):
             if did_calculate:
                 messages.insert(1, {"role": "system", "content": CALCULATE_GROUNDING_PROMPT})
 
-            max_tokens = compute_max_tokens(messages)
+            # The budget arithmetic is advisory; the window is not.
+            messages, dropped_tool_msgs = trim_to_window(messages)
+            if dropped_tool_msgs:
+                logger.warning(f"Session {session_id}: dropped {dropped_tool_msgs} tool messages to fit window")
             prompt_tokens = count_tokens(messages)
+            max_tokens = compute_max_tokens(messages)
+            
             logger.info(f"Session {session_id}: prompt_tokens={prompt_tokens}, max_tokens={max_tokens}, did_search={did_search}, did_calculate={did_calculate})")
 
             root.update_trace(
@@ -484,6 +528,8 @@ async def chat(request: Request):
                     "did_calculate": did_calculate,
                     "tool_iters": tool_iter + 1,
                     "prompt_tokens": prompt_tokens,
+                    "search_chars_used": search_chars_used,
+                    "dropped_tool_msgs": dropped_tool_msgs,
                 },
             )
 

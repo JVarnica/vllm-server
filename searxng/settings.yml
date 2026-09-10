@@ -18,17 +18,15 @@ outgoing:
 engines:
   # general web — enable
   - name: bing
-    disabled: false
+    disabled: true
     language: en-GB
   - name: mojeek
-    disabled: false
+    disabled: true
   - name: mwmbl
     disabled: true  # bad results 
-  - name: stract
-    disabled: false
-  - name: right dao
-    disabled: false
   - name: yep
+    disabled: true
+  - name: yahoo
     disabled: false
 
   # science
@@ -63,7 +61,7 @@ engines:
   - name: brave
     disabled: true
   - name: startpage
-    disabled: true
+    disabled: false
 
   # wikidata: init fails on 403 from query.wikidata.org
   - name: wikidata

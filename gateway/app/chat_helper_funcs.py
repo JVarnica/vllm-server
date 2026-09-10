@@ -58,15 +58,15 @@ def compute_max_tokens(messages: list[dict], tools: list[dict] | None = None) ->
     return max(MIN_GEN_TOKENS, available)
 
 # sse stream done when "finish_reason": "stop" recieved so need to have flag for when recieved
-def parse_sse_stream(line: str) -> tuple[str, bool, str, dict]:
-    empty = ("", False, "", {})
+def parse_sse_stream(line: str) -> tuple[str, str, bool, str, dict]:
+    empty = ("","", False, "", {})
     if not line.startswith("data:"):
         return empty
     data = line[len("data:"):].strip()
     if not data:
         return empty
     if data == "[DONE]":
-        return ("", True, "stop",{})
+        return ("", "", True, "stop",{})
     try:
         obj = json.loads(data)
     except json.JSONDecodeError:
@@ -84,3 +84,30 @@ def parse_sse_stream(line: str) -> tuple[str, bool, str, dict]:
     done = finish in ("stop", "length") 
     usage =obj.get("usage")
     return (content, reasoning_content ,done, finish, usage)
+
+DROPPED_MARKER = "[dropped: context budget exceeded]"
+
+def trim_to_window(messages: list[dict], reserve: int = MIN_GEN_TOKENS) -> tuple[list[dict], int]:
+    """Blank the oldest tool messages until prompt + reserve fits the window.
+
+    Content is replaced, not removed: every tool_call on an assistant message
+    needs its answering role="tool" reply or the chat template rejects the
+    request. Already-blanked messages are skipped or the loop never terminates.
+    """
+    out = list(messages)
+    dropped = 0
+    prompt_tokens = count_tokens(out)
+    while prompt_tokens + reserve + MARGIN_SAFETY > MAX_CONTEXT_WINDOW:
+        victim = next(
+            (i for i, m in enumerate(out)
+             if m.get("role") == "tool"
+             and not (m.get("content") or "").startswith(DROPPED_MARKER)),
+            None,
+        )
+        if victim is None:
+            logger.warning(f"Prompt still {prompt_tokens} tokens with no tool messages left to drop")
+            break
+        out[victim] = {**out[victim], "content": DROPPED_MARKER}
+        dropped += 1
+        prompt_tokens = count_tokens(out)
+    return out, dropped

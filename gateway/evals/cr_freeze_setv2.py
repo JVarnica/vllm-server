@@ -58,6 +58,19 @@ async def login(auth_url, user, password):
     )
 
 
+async def refresh_auth(client, auth_url, user, password):
+    """
+    Re-login and patch the live client's headers in place.
+
+    A 36-row freeze at 15s/row runs longer than the access token's lifetime, so
+    the token WILL expire mid-run. Losing 33 completed rows to a 401 on row 34
+    is not an acceptable failure mode.
+    """
+    headers = await login(auth_url, user, password)
+    client.headers.update(headers)
+    return headers
+
+
 async def create_session(client, base_url):
     r = await client.post(f"{base_url}/session/create", json={}, timeout=30)
     r.raise_for_status()
@@ -161,6 +174,9 @@ async def capture(client, base_url, question, tool_policy=None, require_engine=N
     elif not error and searches and not any(tr.get("tool_content") for tr in searches):
         error = "web_search ran but returned no content"
 
+    # A row retrieved without the engine that produces good URLs is poison: it
+    # replays in phase 2 as confidently-cited junk and reads as a model failure.
+    # Reject it here so it can be re-run, rather than writing it.
     engines_seen: set[str] = set()
     for tr in searches:
         engines_seen |= _engines_of(tr)
@@ -172,22 +188,26 @@ async def capture(client, base_url, question, tool_policy=None, require_engine=N
         elif len(engines_seen) <= 1 and not require_engine:
             error = f"single-engine result set {sorted(engines_seen)} - freeze unsafe"
 
-
     return {
         "session_id": session_id,
         "turns": ordered,
         # Flat, ordered grounding for phase 2: one block per call, labelled with
         # the query so a multi-search answer can be traced back per entity.
         "tool_content": [
-            {"query": tr["query"], 
-                "effective_query": tr["effective_query"], 
-                "engine": tr["metadata"][0].get("engine"),
+            {
+                "query": tr["query"],
+                "effective_query": tr["effective_query"],
+                # metadata may be empty (results_count == 0), so never index it blind.
+                "engine": ((tr.get("metadata") or [{}])[0]).get("engine"),
+                # Which engines actually answered, so a degraded freeze is
+                # visible in the row itself and not only in the gateway logs.
                 "engines": sorted(_engines_of(tr)),
-                "recency_mode": tr["recency_mode"], 
-                "recency_component": tr["metadata"][0].get("recency_component"),
-                "retrieval_score": tr["metadata"][0].get("retrieval_score"), 
-                "searx_score": tr["metadata"][0].get("searx_score"), 
-                "content": tr["tool_content"]}
+                "recency_mode": tr["recency_mode"],
+                "recency_component": ((tr.get("metadata") or [{}])[0]).get("recency_component"),
+                "retrieval_score": ((tr.get("metadata") or [{}])[0]).get("retrieval_score"),
+                "searx_score": ((tr.get("metadata") or [{}])[0]).get("searx_score"),
+                "content": tr["tool_content"],
+            }
             for tr in searches if tr.get("tool_content")
         ],
         "n_iterations": len(ordered),
@@ -211,11 +231,19 @@ async def main():
     p.add_argument("questions")
     p.add_argument("--out", default="evals/freeze/freeze_set.jsonl")
     p.add_argument("--base-url", default="http://localhost:8080")
-    p.add_argument("--concurrency", type=int, default=8)
+    # Serial by default. Burst traffic is what gets the scraped engines
+    # suspended (180s), and a suspension mid-run silently degrades every
+    # subsequent row to whatever junk engine is still answering.
+    p.add_argument("--concurrency", type=int, default=1)
+    p.add_argument("--sleep", type=float, default=15.0,
+                   help="seconds between rows; 0 to disable")
+    p.add_argument("--require-engine", default="google cse",
+                   help="reject any row this engine did not contribute to; "
+                        "empty string to only reject single-engine rows")
     p.add_argument("--limit", type=int, default=0, help="first N items (smoke)")
     p.add_argument("--stratum", default=None, help="freeze only this stratum")
-    p.add_argument("--retries", type=int, default=1,
-                   help="re-run rows that errored; a failed freeze row is dead weight")
+    p.add_argument("--resume", action="store_true",
+                   help="skip ids already present in --out and append")
     p.add_argument("--auth-url", default="http://auth:8090")
     p.add_argument("--user", default=os.environ.get("EVAL_USER"))
     p.add_argument("--password", default=os.environ.get("EVAL_PASS"))
@@ -241,35 +269,79 @@ async def main():
     async def one(client, item):
         async with sem:
             captured = await capture(client, args.base_url, item["question"],
-                                     item.get("tool_policy"))
+                                     item.get("tool_policy"),
+                                     require_engine=args.require_engine or None)
         # Carry the whole question item through, so the freeze row is
         # self-contained and phase 2 never has to re-read a file that may
         # have changed since the freeze.
         return {**item, **captured}
 
-    async with httpx.AsyncClient(headers=headers) as client:
-        rows = await asyncio.gather(*(one(client, it) for it in items))
+    async def run_pass(client, todo, pause, sink):
+        """
+        One paced pass over `todo`, writing each good row to disk immediately.
 
-        for attempt in range(args.retries):
-            failed = [r for r in rows if r["error"]]
-            if not failed:
-                break
-            print(f"  retry {attempt + 1}: {len(failed)} rows")
-            by_id = {r["id"]: r for r in rows}
-            redone = await asyncio.gather(*(one(client, by_id[r["id"]]) for r in failed))
-            for r in redone:
-                if not r["error"]:
-                    by_id[r["id"]] = r
-            rows = [by_id[r["id"]] for r in rows]
+        Rows are flushed as they land rather than accumulated and written at the
+        end: a run this long will be interrupted sooner or later, and completed
+        work should survive it.
+        """
+        done = []
+        for i, item in enumerate(todo, 1):
+            try:
+                row = await one(client, item)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code != 401:
+                    raise
+                print("  token expired - re-authenticating", flush=True)
+                await refresh_auth(client, args.auth_url, args.user, args.password)
+                row = await one(client, item)
+
+            status = "ok" if not row["error"] else f"FAIL {row['error']}"
+            engines = sorted({e for tc in row.get("tool_content", [])
+                              for e in (tc.get("engines") or [])})
+            print(f"  [{i}/{len(todo)}] {row['id']:<8} {status}"
+                  f"{'  engines=' + ','.join(engines) if engines else ''}",
+                  flush=True)
+
+            if not row["error"] and row.get("tool_content"):
+                sink.write(json.dumps({k: row[k] for k in FREEZE_KEYS if k in row}) + "\n")
+                sink.flush()
+            done.append(row)
+
+            if pause and i < len(todo):
+                await asyncio.sleep(pause)
+        return done
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with out_path.open("w") as f:
-        for row in rows:
-            if not row.get("error") and not row.get("tool_content"):
-                raise SystemExit(f"{row['id']}: no tool_content to freeze")
-            f.write(json.dumps({k: row[k] for k in FREEZE_KEYS if k in row}) + "\n")
 
+    if args.resume and out_path.exists():
+        have = {json.loads(l)["id"] for l in out_path.read_text().splitlines() if l.strip()}
+        before = len(items)
+        items = [i for i in items if i["id"] not in have]
+        print(f"resume: {before - len(items)} rows already frozen, {len(items)} to go")
+        if not items:
+            raise SystemExit("nothing left to freeze")
+
+    with out_path.open("a" if args.resume else "w") as sink:
+        async with httpx.AsyncClient(headers=headers) as client:
+            # No retry pass. A failed row is written to <out>.rerun.jsonl and the
+            # script is simply run again on that file, which is the same work with
+            # a clean audit trail and no in-run waiting.
+            rows = await run_pass(client, items, args.sleep, sink)
+
+    # Good rows were already flushed by run_pass; only failures remain to report.
+    skipped = [r["id"] for r in rows if r.get("error") or not r.get("tool_content")]
+
+    if skipped:
+        rerun = out_path.with_suffix(".rerun.jsonl")
+        by_id = {r["id"]: r for r in rows}
+        with rerun.open("w") as f:
+            for rid in skipped:
+                item = {k: v for k, v in by_id[rid].items()
+                        if k not in ("turns", "tool_content", "queries", "live_answer")}
+                f.write(json.dumps(item) + "\n")
+        print(f"\n  {len(skipped)} rows NOT written: {', '.join(skipped)}")
+        print(f"  re-run them with: --questions {rerun} (then concatenate)")
 
     report(rows, out_path)
 

@@ -12,7 +12,6 @@ import asyncio
 import logging
 logger = logging.getLogger("uvicorn.error")
 
-
 # ---------------------------------------------------------------------------
 # Search configuration
 # ---------------------------------------------------------------------------
@@ -930,6 +929,7 @@ def format_search_context(
     per_result_chars: Optional[int] = None,
     header: str = "[Web search results]",
     include_engine_metadata: bool = True,
+    start_index: int = 1,
 ) -> str:
     if not results:
         return ""
@@ -947,7 +947,7 @@ def format_search_context(
     lines = [header] if header else []
     total_chars = len(header)
 
-    for i, result in enumerate(results, start=1):
+    for i, result in enumerate(results, start=start_index):
         title = (result.get("title") or "").strip()
         url = (result.get("url") or "").strip()
         snippet = re.sub(r"\s+", " ", (result.get("snippet") or "").strip())
